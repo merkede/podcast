@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 52" width="220" height="52">
+  <!-- Background pill -->
+  <rect x="0" y="0" width="220" height="52" rx="6" ry="6" fill="#00A651"/>
+
+  <!-- "H" shield mark -->
+  <rect x="10" y="10" width="6" height="32" rx="1" fill="white"/>
+  <rect x="26" y="10" width="6" height="32" rx="1" fill="white"/>
+  <rect x="10" y="24" width="22" height="5" rx="1" fill="white"/>
+
+  <!-- Text: Hastings -->
+  <text x="48" y="22" font-family="'Segoe UI', Arial, sans-serif" font-weight="700"
+        font-size="14" fill="white" letter-spacing="0.5">HASTINGS</text>
+
+  <!-- Text: Direct -->
+  <text x="48" y="38" font-family="'Segoe UI', Arial, sans-serif" font-weight="400"
+        font-size="12" fill="rgba(255,255,255,0.88)" letter-spacing="1.5">DIRECT</text>
+</svg>
