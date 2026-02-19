@@ -1143,6 +1143,12 @@ def update_impact_tab(start_date, end_date, queues, hours, segments):
         '3+': POWERBI_COLORS['danger']
     }
 
+    # Build transfer bin → case IDs mapping for click-through
+    impact_bin_cases = {}
+    for tbin in ['0', '1', '2', '3+']:
+        bin_cases = filtered[filtered.transfer_bin == tbin]
+        impact_bin_cases[tbin] = bin_cases.CASE_ID.astype(str).tolist()
+
     # Box plots — AHT (capped at P95, no individual dots, mean + median labelled)
     aht_fig = go.Figure()
     for tbin in ['0', '1', '2', '3+']:
@@ -1280,6 +1286,7 @@ def update_impact_tab(start_date, end_date, queues, hours, segments):
     ], className="insight-card mb-3")
 
     return html.Div([
+        dcc.Store(id='impact-bin-store', data=impact_bin_cases),
         guide_statement([
             "Every transfer doesn't just delay the customer, ",
             html.Strong("it inflates the total effort. "),
@@ -1293,13 +1300,55 @@ def update_impact_tab(start_date, end_date, queues, hours, segments):
         kpi_row,
         insight,
         html.Hr(className="divider"),
+        html.P("Click any box to see the individual cases in that transfer group.",
+               style={'fontSize': '0.78rem', 'color': '#999', 'marginBottom': '0.3rem'}),
         dbc.Row([
-            dbc.Col([dcc.Graph(figure=aht_fig, config={'responsive': False})], md=6),
-            dbc.Col([dcc.Graph(figure=msg_fig, config={'responsive': False})], md=6),
+            dbc.Col([dcc.Graph(id='impact-aht-box', figure=aht_fig, config={'responsive': False})], md=6),
+            dbc.Col([dcc.Graph(id='impact-msg-box', figure=msg_fig, config={'responsive': False})], md=6),
         ], className="mb-2"),
         html.Hr(className="divider"),
-        dcc.Graph(figure=esc_fig, config={'responsive': False})
+        dcc.Graph(figure=esc_fig, config={'responsive': False}),
+
+        dbc.Modal([
+            dbc.ModalHeader(dbc.ModalTitle(id='impact-modal-title')),
+            dbc.ModalBody(id='impact-modal-body'),
+        ], id='impact-modal', size='xl', is_open=False),
     ])
+
+
+@callback(
+    [Output('impact-modal', 'is_open'),
+     Output('impact-modal-title', 'children'),
+     Output('impact-modal-body', 'children')],
+    [Input('impact-aht-box', 'clickData'),
+     Input('impact-msg-box', 'clickData')],
+    State('impact-bin-store', 'data'),
+    prevent_initial_call=True
+)
+def open_impact_modal(aht_click, msg_click, bin_store):
+    if not bin_store:
+        return False, "", ""
+
+    triggered = ctx.triggered_id
+    click_data = aht_click if triggered == 'impact-aht-box' else msg_click
+    if not click_data:
+        return False, "", ""
+
+    points = click_data.get('points', [])
+    if not points:
+        return False, "", ""
+
+    # curveNumber maps to transfer bin order: 0→'0', 1→'1', 2→'2', 3→'3+'
+    curve = points[0].get('curveNumber', 0)
+    bin_keys = ['0', '1', '2', '3+']
+    tbin = bin_keys[curve] if curve < len(bin_keys) else '0'
+    case_ids = bin_store.get(tbin, [])
+    if not case_ids:
+        return False, "", ""
+
+    chart_type = "AHT" if triggered == 'impact-aht-box' else "Messages"
+    label = f"{tbin} transfer{'s' if tbin != '1' else ''}"
+    return _build_case_detail_modal(case_ids, f"{chart_type}: {len(case_ids)} Cases with {label}")
 
 
 # ==================================
