@@ -537,6 +537,17 @@ def create_filter_section(tab_id):
     ], className="filter-panel mb-4")
 
 
+def guide_statement(text):
+    """Render a business guide statement banner at the top of a tab."""
+    return html.Div(
+        html.P(text, style={'margin': 0, 'fontSize': '0.88rem', 'color': '#444',
+                            'lineHeight': '1.6', 'fontStyle': 'italic'}),
+        style={'background': '#F3F2F1', 'borderLeft': '3px solid #0078D4',
+               'borderRadius': '0 6px 6px 0', 'padding': '0.8rem 1.2rem',
+               'marginBottom': '1.2rem'}
+    )
+
+
 def filter_data(case_data, start_date, end_date, queues, hours, segments=None):
     if not hours:
         return pd.DataFrame()
@@ -1070,6 +1081,12 @@ def update_process_tab(start_date, end_date, queues, hours, segments):
     ], className="mb-4")
 
     return html.Div([
+        guide_statement(
+            "Not all queues add value, some just add delay. The intermediary queues shown here "
+            "are where Messenger cases sit waiting between handoffs, contributing nothing to resolution. "
+            "If a queue appears frequently in the Pareto, it's either a structural bottleneck or a sign "
+            "that cases are being sent there by mistake."
+        ),
         kpi_row,
         html.Hr(className="divider"),
         dbc.Row([
@@ -1232,7 +1249,7 @@ def update_impact_tab(start_date, end_date, queues, hours, segments):
                       annotation_text="Baseline (0 transfers = 100)",
                       annotation_font=dict(size=11, color='#666'))
     esc_fig.update_layout(
-        title=dict(text="Escalation Index: Handle Time & Messages vs First-Touch Baseline",
+        title=dict(text="Multiplier Effect: Handle Time & Messages vs First-Touch Baseline",
                    font=dict(size=13, color='#201F1E', family='Segoe UI')),
         xaxis_title="Number of Transfers",
         yaxis_title="Index (0 transfers = 100)",
@@ -1260,10 +1277,12 @@ def update_impact_tab(start_date, end_date, queues, hours, segments):
     ], className="insight-card mb-3")
 
     return html.Div([
-        html.H5("Cost & Effort Impact",
-                style={'fontWeight': '700', 'color': '#201F1E', 'marginBottom': '0.3rem'}),
-        html.P("Every transfer inflates both agent handle time AND customer effort — a dual cost to the business.",
-               className="text-muted mb-3"),
+        guide_statement(
+            f"Every transfer doesn't just delay the customer, it inflates the total effort. "
+            f"A case that gets transferred 3+ times costs {aht_pct:.0f}% more handle time and generates "
+            f"{msg_pct:.0f}% more customer messages than one resolved first-touch. "
+            f"This is the compounding cost of mis-routing."
+        ),
         kpi_row,
         insight,
         html.Hr(className="divider"),
@@ -1346,10 +1365,12 @@ def update_hours_tab(start_date, end_date, queues, hours, segments):
     ], style={'marginBottom': '1rem'})
 
     return html.Div([
-        html.H5("Hours & Transfer Effect",
-                style={'fontWeight': '700', 'color': '#201F1E', 'marginBottom': '0.3rem'}),
-        html.P("Explore operational patterns across day of week and hour of day. Toggle views to reveal where demand, effort, and delays concentrate.",
-               className="text-muted mb-3"),
+        guide_statement(
+            f"Out-of-hours cases don't just transfer more often, they transfer harder. "
+            f"The OOH multi-transfer rate is {ooh_multi:.0f}% vs {ih_multi:.0f}% in-hours, "
+            f"and each of those transfers costs {ooh_aht_penalty:+.0f}% more handle time. "
+            f"The heatmap below reveals exactly when the routing breaks down across the week."
+        ),
         insight,
         summary_cards,
         html.Hr(className="divider"),
@@ -1480,10 +1501,11 @@ def update_qi_tab(start_date, end_date, queues, hours, segments):
 
     all_queues = sorted(df_raw.QUEUE_NEW.dropna().unique())
     return html.Div([
-        html.H5("Queue Intelligence",
-                style={'fontWeight': '700', 'color': '#201F1E', 'marginBottom': '0.3rem'}),
-        html.P("Select any queue to see its dwell time, transfer flows, and contribution to routing waste.",
-               className="text-muted mb-3"),
+        guide_statement(
+            "Every queue tells a story: is it resolving cases, or just passing them along? "
+            "Select a queue below to see who's sending it work, where it sends cases next, and how long they dwell. "
+            "If a queue has high inbound volume but low resolution, it's acting as an expensive middleman."
+        ),
         dbc.Row([
             dbc.Col([
                 html.Div([
@@ -1652,10 +1674,11 @@ def update_journey_tab(start_date, end_date, queues, hours, segments):
 
     all_queues = sorted(df_raw.QUEUE_NEW.dropna().unique())
     return html.Div([
-        html.H5("Customer Journey Pathways",
-                style={'fontWeight': '700', 'color': '#201F1E', 'marginBottom': '0.3rem'}),
-        html.P("Visualise how customers flow through queues — forward paths (where they go) and backward paths (how they arrived).",
-               className="text-muted mb-3"),
+        guide_statement(
+            "The shortest path to resolution is the cheapest one. This tab maps how Messenger cases "
+            "actually flow through the business: the most common routes, the longest chains, and the "
+            "unnecessary detours. Every extra hop on the journey is time, effort, and customer patience burned."
+        ),
 
         dbc.Row([
             dbc.Col([
@@ -2040,6 +2063,11 @@ def update_explorer_tab(start_date, end_date, queues, hours, segments):
     ], style={'marginBottom': '1rem', 'display': 'flex', 'alignItems': 'center'})
 
     return html.Div([
+        guide_statement(
+            "Everything in this report is built from the data below. Browse case-level summaries, "
+            "queue-level detail, or full transfer paths, then download the CSV to run your own analysis. "
+            "No black boxes."
+        ),
         xfer_slicer,
         view_selector,
         download_bar,
@@ -2385,18 +2413,11 @@ def build_ml_insights_tab():
     ])
 
     return html.Div([
-        html.Div([
-            html.Div("PREDICTIVE MODELS", style={
-                'fontSize': '0.65rem', 'fontWeight': '700', 'letterSpacing': '1.5px',
-                'color': '#00BCF2', 'marginBottom': '0.3rem', 'textTransform': 'uppercase',
-            }),
-            html.H5("ML Insights — Messenger Transfer Intelligence", style={
-                'fontWeight': '700', 'color': '#201F1E', 'marginBottom': '0.3rem'}),
-            html.P("Three models trained on case data. Transfer Risk and Queue Recommendation use only "
-                   "features available at case creation — they could be deployed in real-time. "
-                   "Journey Clustering identifies natural case archetypes after resolution.",
-                   style={'color': '#888', 'fontSize': '0.85rem', 'marginBottom': '0'}),
-        ], className="mb-4"),
+        guide_statement(
+            "These models learn from your routing data to answer three questions humans struggle with at scale: "
+            "which cases are most likely to bounce, where should they have gone in the first place, and what "
+            "behavioural patterns keep repeating? The answers are predictions, not rules. Treat them as a second opinion."
+        ),
         model1_section,
         html.Hr(className="divider"),
         model2_section,
