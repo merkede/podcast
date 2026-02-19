@@ -1405,27 +1405,25 @@ def update_hours_heatmap(view, start_date, end_date, queues, hours, segments):
     if len(filtered) == 0:
         return html.Div("No data for current filters.", className="alert alert-warning")
 
-    # Build Day x Hour pivot
+    # Build Day x Hour pivot — single red gradient for all views
+    red_scale = [[0, '#FFF5F5'], [0.2, '#FFCDD2'], [0.4, '#EF9A9A'],
+                 [0.6, '#E57373'], [0.8, '#D32F2F'], [1, '#8B0000']]
     hm_config = {
         'aht':      {'col': 'total_active_aht', 'agg': 'median', 'fmt': '.0f', 'unit': 'min',
                      'title': 'Median Handle Time (min) by Day and Hour',
-                     'colorscale': [[0, '#E8F5E9'], [0.25, '#81C784'], [0.5, '#FDD835'],
-                                    [0.75, '#EF6C00'], [1, '#B71C1C']]},
+                     'colorscale': red_scale},
         'messages': {'col': 'messages', 'agg': 'median', 'fmt': '.0f', 'unit': 'msgs',
                      'title': 'Median Customer Messages by Day and Hour',
-                     'colorscale': [[0, '#E3F2FD'], [0.25, '#64B5F6'], [0.5, '#FDD835'],
-                                    [0.75, '#EF6C00'], [1, '#B71C1C']]},
+                     'colorscale': red_scale},
         'volume':   {'col': 'CASE_ID', 'agg': 'count', 'fmt': '.0f', 'unit': 'cases',
                      'title': 'Transfer Volume (Case Count) by Day and Hour',
-                     'colorscale': [[0, '#F3E5F5'], [0.25, '#BA68C8'], [0.5, '#FDD835'],
-                                    [0.75, '#EF6C00'], [1, '#B71C1C']]},
+                     'colorscale': red_scale},
         'routing':  {'col': 'routing_days', 'agg': 'median', 'fmt': '.1f', 'unit': 'days',
                      'title': 'Median Routing Wait (days) by Day and Hour',
-                     'colorscale': [[0, '#FFF3E0'], [0.25, '#FFB74D'], [0.5, '#FDD835'],
-                                    [0.75, '#E65100'], [1, '#B71C1C']]},
+                     'colorscale': red_scale},
         'inhours':  {'col': 'inhours', 'agg': 'mean', 'fmt': '.0%', 'unit': '% IH',
                      'title': 'In-Hours Rate (%) by Day and Hour',
-                     'colorscale': [[0, '#FFCDD2'], [0.5, '#FFF9C4'], [1, '#C8E6C9']]},
+                     'colorscale': red_scale},
     }
 
     cfg = hm_config.get(view, hm_config['aht'])
@@ -1434,8 +1432,9 @@ def update_hours_heatmap(view, start_date, end_date, queues, hours, segments):
     pivot = (filtered.groupby(['day_of_week', 'hour_of_day'])[col]
              .agg(agg).reset_index())
     pivot_wide = pivot.pivot(index='day_of_week', columns='hour_of_day', values=col)
-    # Ensure all days and hours present
+    # Ensure all days and hours present, zero-fill any gaps
     pivot_wide = pivot_wide.reindex(index=range(7), columns=range(24), fill_value=0)
+    pivot_wide = pivot_wide.fillna(0)
 
     vals = pivot_wide.values
     vmin, vmax = np.nanmin(vals), np.nanmax(vals)
@@ -1479,7 +1478,7 @@ def update_hours_heatmap(view, start_date, end_date, queues, hours, segments):
         xaxis=dict(title="Hour of Day", tickfont=dict(size=10), tickangle=0,
                    dtick=1, side='bottom'),
         yaxis=dict(tickfont=dict(size=11), autorange='reversed'),
-        width=1100, height=380, autosize=False,
+        width=1200, height=500, autosize=False,
         paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
         font=dict(family='Segoe UI'),
         margin=dict(l=100, r=60, t=55, b=50),
@@ -2362,7 +2361,7 @@ def build_ml_insights_tab():
                          hover_data=['Case', 'Transfers', 'AHT'],
                          color_discrete_sequence=CHART_COLORS)
     fig_pca.update_layout(
-        title=f"Journey Clusters (PCA 2D) — Silhouette: {art3['silhouette']:.2f}",
+        title=f"Clustering & Anomaly Detection (PCA 2D) — Silhouette: {art3['silhouette']:.2f}",
         width=600, height=480, autosize=False,
         paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
         font=dict(family='Segoe UI', color='#201F1E'),
@@ -2409,15 +2408,29 @@ def build_ml_insights_tab():
             })], md=12 // max(len(profiles), 1), className="mb-3")
         )
 
+    # Identify anomaly clusters (avg_transfers >= 3)
+    anomaly_clusters = [art3['name_map'][idx] for idx, row in profiles.iterrows()
+                        if row['avg_transfers'] >= 3]
+    anomaly_count = sum(int(row['count']) for idx, row in profiles.iterrows()
+                        if row['avg_transfers'] >= 3)
+    anomaly_pct = (anomaly_count / len(case_df) * 100) if len(case_df) > 0 else 0
+
     model3_section = html.Div([
         html.Div([
-            html.H6("Model 3: Journey Clustering", style={
+            html.H6("Model 3: Clustering & Anomaly Detection", style={
                 'fontWeight': '700', 'color': POWERBI_COLORS['secondary'], 'marginBottom': '0.3rem'}),
             html.P(f"KMeans (k={art3['best_k']}) — Silhouette Score: {art3['silhouette']:.3f}",
                    style={'fontSize': '0.85rem', 'color': '#555', 'marginBottom': '0'}),
-            html.P("Groups Messenger cases into natural journey archetypes based on transfer patterns, "
-                   "handle time, routing days, message volume, and queue visit patterns.",
-                   style={'fontSize': '0.8rem', 'color': '#888', 'marginBottom': '0'}),
+            html.P([
+                "Groups Messenger cases into natural journey archetypes based on transfer count, handle time, "
+                "routing days, message volume, and queue visit patterns. Clusters with ",
+                html.Strong("3+ average transfers are flagged as anomalies"),
+                " because they represent cases that bounced far beyond normal routing. "
+                f"Currently {anomaly_count} cases ({anomaly_pct:.1f}%) fall into anomaly clusters"
+                + (f" ({', '.join(anomaly_clusters)}). " if anomaly_clusters else ". ")
+                + "These are the cases worth investigating first: why did they bounce so many times, "
+                "and could better initial routing have prevented it?",
+            ], style={'fontSize': '0.8rem', 'color': '#888', 'marginBottom': '0'}),
         ], className="insight-card mb-3"),
         dbc.Row(profile_cards, className="mb-3"),
         dbc.Row([
