@@ -209,8 +209,18 @@ def build_ml_models(case_df, df_raw):
 
     # Drop rows with NaN in target columns for training, predict on all
     valid_mask = df['ftr'].notna() & df['final_queue'].notna() & df['entry_queue'].notna()
-    X_valid = X[valid_mask]
-    df_valid = df[valid_mask]
+    X_valid_all = X[valid_mask]
+    df_valid_all = df[valid_mask]
+
+    # Sample for training speed — train on up to 3000 rows, predict on ALL rows
+    ML_SAMPLE_SIZE = 3000
+    if len(df_valid_all) > ML_SAMPLE_SIZE:
+        sample_idx = df_valid_all.sample(n=ML_SAMPLE_SIZE, random_state=42).index
+        X_valid = X_valid_all.loc[sample_idx]
+        df_valid = df_valid_all.loc[sample_idx]
+    else:
+        X_valid = X_valid_all
+        df_valid = df_valid_all
 
     # Use fewer folds if dataset is small or has rare classes
     min_class_count = min(df_valid['ftr'].value_counts().min(),
@@ -302,24 +312,34 @@ def build_ml_models(case_df, df_raw):
     cluster_features = ['transfers', 'routing_days', 'total_active_aht',
                         'messages', 'loop_flag', 'inhours', 'message_intensity']
     X_cluster_base = df.set_index('CASE_ID')[cluster_features].fillna(0)
-    X_cluster = X_cluster_base.join(queue_counts, how='left').fillna(0)
+    X_cluster_all = X_cluster_base.join(queue_counts, how='left').fillna(0)
+
+    # Sample for clustering training (silhouette + KMeans fit)
+    if len(X_cluster_all) > ML_SAMPLE_SIZE:
+        X_cluster_sample = X_cluster_all.sample(n=ML_SAMPLE_SIZE, random_state=42)
+    else:
+        X_cluster_sample = X_cluster_all
 
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_cluster)
+    X_scaled_sample = scaler.fit_transform(X_cluster_sample)
 
     best_k, best_sil = 4, -1
     for k in [3, 4, 5, 6]:
         km_temp = KMeans(n_clusters=k, n_init=10, random_state=42)
-        labels_temp = km_temp.fit_predict(X_scaled)
-        sil = silhouette_score(X_scaled, labels_temp)
+        labels_temp = km_temp.fit_predict(X_scaled_sample)
+        sil = silhouette_score(X_scaled_sample, labels_temp)
         if sil > best_sil:
             best_k, best_sil = k, sil
 
     km = KMeans(n_clusters=best_k, n_init=10, random_state=42)
-    cluster_labels = km.fit_predict(X_scaled)
+    km.fit(X_scaled_sample)
+
+    # Predict on ALL rows, PCA on ALL rows
+    X_scaled_all = scaler.transform(X_cluster_all)
+    cluster_labels = km.predict(X_scaled_all)
 
     pca = PCA(n_components=2, random_state=42)
-    pca_coords = pca.fit_transform(X_scaled)
+    pca_coords = pca.fit_transform(X_scaled_all)
 
     df['journey_cluster'] = cluster_labels
 
@@ -361,7 +381,7 @@ def build_ml_models(case_df, df_raw):
         'model': km, 'scaler': scaler, 'pca': pca, 'pca_coords': pca_coords,
         'silhouette': best_sil, 'best_k': best_k,
         'cluster_profiles': cluster_profiles, 'name_map': name_map,
-        'feature_names': list(X_cluster.columns),
+        'feature_names': list(X_cluster_all.columns),
     }
 
     # Only return ML-specific columns to add back — don't overwrite original data
