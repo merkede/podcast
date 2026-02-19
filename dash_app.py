@@ -1749,8 +1749,9 @@ def update_journey_analysis(selected_queue, depth, start_date, end_date, queues,
     q_cases = df_f[df_f.QUEUE_NEW == selected_queue].CASE_ID.unique()
     q_journeys = df_f[df_f.CASE_ID.isin(q_cases)].sort_values(['CASE_ID', 'QUEUE_ORDER'])
 
-    # Forward paths
+    # Forward paths (with case IDs)
     forward_paths = []
+    forward_path_cids = []
     for cid in q_cases:
         j = q_journeys[q_journeys.CASE_ID == cid].QUEUE_NEW.tolist()
         if selected_queue in j:
@@ -1758,9 +1759,11 @@ def update_journey_analysis(selected_queue, depth, start_date, end_date, queues,
             path = j[idx:idx + depth]
             if len(path) > 1:
                 forward_paths.append(path)
+                forward_path_cids.append(str(cid))
 
-    # Backward paths
+    # Backward paths (with case IDs)
     backward_paths = []
+    backward_path_cids = []
     for cid in q_cases:
         j = q_journeys[q_journeys.CASE_ID == cid].QUEUE_NEW.tolist()
         if selected_queue in j:
@@ -1768,6 +1771,7 @@ def update_journey_analysis(selected_queue, depth, start_date, end_date, queues,
             path = j[max(0, end_idx - depth + 1):end_idx + 1]
             if len(path) > 1:
                 backward_paths.append(path)
+                backward_path_cids.append(str(cid))
 
     # Complete paths with case ID mapping
     path_to_cases = {}
@@ -1867,26 +1871,32 @@ def update_journey_analysis(selected_queue, depth, start_date, end_date, queues,
     store_data = {row['Journey Path']: path_to_cases.get(row['Journey Path'], [])
                   for _, row in top_paths.iterrows()}
 
-    forward_sankey  = create_sankey_from_paths(forward_paths,  f"Forward Journey from {selected_queue}")
-    backward_sankey = create_sankey_from_paths(backward_paths, f"Backward Journey to {selected_queue}")
+    forward_sankey, fwd_link_map = create_sankey_from_paths(
+        forward_paths, f"Forward Journey from {selected_queue}", forward_path_cids)
+    backward_sankey, bwd_link_map = create_sankey_from_paths(
+        backward_paths, f"Backward Journey to {selected_queue}", backward_path_cids)
 
     return html.Div([
         dcc.Store(id='journey-path-store', data=store_data),
+        dcc.Store(id='journey-fwd-link-store', data=fwd_link_map),
+        dcc.Store(id='journey-bwd-link-store', data=bwd_link_map),
         stats_cards,
         avoidable_callout,
         html.Hr(className="divider"),
 
         html.H6(f"Forward View: Where do customers go FROM {selected_queue}?",
                 style={'fontWeight': '600', 'color': '#201F1E'}),
-        html.P("Paths customers take AFTER entering this queue.", className="text-muted"),
-        dcc.Graph(figure=forward_sankey, config={'responsive': False}),
+        html.P("Paths customers take AFTER entering this queue. Click any link to see case details.",
+               className="text-muted"),
+        dcc.Graph(id='forward-sankey', figure=forward_sankey, config={'responsive': False}),
 
         html.Hr(className="divider"),
 
         html.H6(f"Backward View: How do customers arrive TO {selected_queue}?",
                 style={'fontWeight': '600', 'color': '#201F1E'}),
-        html.P("Paths customers took BEFORE reaching this queue.", className="text-muted"),
-        dcc.Graph(figure=backward_sankey, config={'responsive': False}),
+        html.P("Paths customers took BEFORE reaching this queue. Click any link to see case details.",
+               className="text-muted"),
+        dcc.Graph(id='backward-sankey', figure=backward_sankey, config={'responsive': False}),
 
         html.Hr(className="divider"),
 
@@ -1903,25 +1913,33 @@ def update_journey_analysis(selected_queue, depth, start_date, end_date, queues,
     ])
 
 
-def create_sankey_from_paths(paths, title):
+def create_sankey_from_paths(paths, title, path_cids=None):
+    """Build a Sankey figure from paths. Returns (fig, link_case_map).
+    link_case_map maps link index → list of case ID strings."""
     if not paths:
         fig = go.Figure()
         fig.add_annotation(text="No journey data available for this selection",
                            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
                            font=dict(size=14))
         fig.update_layout(title=title, width=1100, height=400, autosize=False)
-        return fig
+        return fig, {}
 
-    links = []
-    for path in paths:
+    # Build link tuples and track which case IDs use each link
+    link_to_cids = {}
+    for p_idx, path in enumerate(paths):
+        cid = path_cids[p_idx] if path_cids and p_idx < len(path_cids) else None
         for i in range(len(path) - 1):
-            links.append((f"{path[i]} (Step {i+1})", f"{path[i+1]} (Step {i+2})"))
+            link_key = (f"{path[i]} (Step {i+1})", f"{path[i+1]} (Step {i+2})")
+            link_to_cids.setdefault(link_key, [])
+            if cid:
+                link_to_cids[link_key].append(cid)
 
-    link_counts = pd.Series(links).value_counts().reset_index()
-    link_counts.columns = ['link', 'count']
-    link_counts[['source', 'target']] = pd.DataFrame(link_counts['link'].tolist(), index=link_counts.index)
+    link_keys = list(link_to_cids.keys())
+    link_counts_vals = [len(link_to_cids[k]) for k in link_keys]
+    sources = [k[0] for k in link_keys]
+    targets = [k[1] for k in link_keys]
 
-    all_nodes = list(set(link_counts['source'].tolist() + link_counts['target'].tolist()))
+    all_nodes = list(set(sources + targets))
     node_dict = {n: i for i, n in enumerate(all_nodes)}
 
     colors = px.colors.qualitative.Set3
@@ -1934,62 +1952,41 @@ def create_sankey_from_paths(paths, title):
             label=all_nodes, color=node_colors
         ),
         link=dict(
-            source=[node_dict[s] for s in link_counts['source']],
-            target=[node_dict[t] for t in link_counts['target']],
-            value=link_counts['count'].tolist(),
-            label=[f"{v} cases" for v in link_counts['count']]
+            source=[node_dict[s] for s in sources],
+            target=[node_dict[t] for t in targets],
+            value=link_counts_vals,
+            label=[f"{v} cases" for v in link_counts_vals]
         )
     )])
 
     fig.update_layout(
-        title=dict(text=title, font=dict(size=15, color='#2c3e50', family='Segoe UI')),
+        title=dict(text=title + " (click any link to see cases)",
+                   font=dict(size=15, color='#2c3e50', family='Segoe UI')),
         font=dict(size=11, family='Segoe UI'),
         width=1100, height=580,
         margin=dict(l=20, r=20, t=60, b=20),
         autosize=False
     )
-    return fig
+
+    # Map link index → case IDs (for the click callback)
+    link_case_map = {str(i): list(set(link_to_cids[k])) for i, k in enumerate(link_keys)}
+
+    return fig, link_case_map
 
 
-@callback(
-    [Output('journey-modal', 'is_open'),
-     Output('journey-modal-title', 'children'),
-     Output('journey-modal-body', 'children')],
-    Input({'type': 'journey-path-row', 'index': ALL}, 'n_clicks'),
-    State('journey-path-store', 'data'),
-    prevent_initial_call=True
-)
-def open_journey_modal(n_clicks, store_data):
-    if not any(n_clicks) or not store_data:
-        return False, "", ""
-
-    # Find which row was clicked
-    triggered = ctx.triggered_id
-    if not triggered or not isinstance(triggered, dict):
-        return False, "", ""
-    row_idx = triggered['index']
-
-    # Get the path string and case IDs
-    paths = list(store_data.keys())
-    if row_idx >= len(paths):
-        return False, "", ""
-    path_str = paths[row_idx]
-    case_ids = store_data[path_str]
-
-    # Build case detail table from case_df
+def _build_case_detail_modal(case_ids, title_prefix=""):
+    """Build modal content for a list of case ID strings."""
     detail = case_df[case_df.CASE_ID.astype(str).isin(case_ids)].copy()
     if len(detail) == 0:
-        return True, f"Cases on: {path_str}", html.P("No case data found.")
+        return True, title_prefix or "Case Details", html.P("No case data found.")
 
     show_cols = ['CASE_ID', 'entry_queue', 'final_queue', 'transfers', 'total_active_aht',
                  'routing_days', 'messages', 'segment']
-    # Add ML columns if available
     for ml_col in ['transfer_risk', 'recommended_queue', 'cluster_name']:
         if ml_col in detail.columns:
             show_cols.append(ml_col)
     detail_show = detail[[c for c in show_cols if c in detail.columns]].copy()
 
-    # Friendly column names
     rename = {'CASE_ID': 'Case ID', 'entry_queue': 'Entry Queue', 'final_queue': 'Final Queue',
               'transfers': 'Transfers', 'total_active_aht': 'AHT (min)', 'routing_days': 'Routing Days',
               'messages': 'Messages', 'segment': 'Segment', 'transfer_risk': 'Transfer Risk %',
@@ -2000,34 +1997,86 @@ def open_journey_modal(n_clicks, store_data):
     if 'Routing Days' in detail_show.columns:
         detail_show['Routing Days'] = detail_show['Routing Days'].round(1)
 
-    # Summary stats
     n = len(detail)
     med_aht = detail['total_active_aht'].median() if 'total_active_aht' in detail.columns else 0
     med_routing = detail['routing_days'].median() if 'routing_days' in detail.columns else 0
     med_msgs = detail['messages'].median() if 'messages' in detail.columns else 0
 
-    summary = html.Div([
-        dbc.Row([
-            dbc.Col([html.Div([html.H4("Cases"), html.H2(f"{n}")],
-                              className="kpi-card kpi-primary")], md=3),
-            dbc.Col([html.Div([html.H4("Med AHT"), html.H2(f"{med_aht:.0f} min")],
-                              className="kpi-card kpi-danger")], md=3),
-            dbc.Col([html.Div([html.H4("Med Routing"), html.H2(f"{med_routing:.1f} days")],
-                              className="kpi-card kpi-warning")], md=3),
-            dbc.Col([html.Div([html.H4("Med Messages"), html.H2(f"{med_msgs:.0f}")],
-                              className="kpi-card kpi-info")], md=3),
-        ], className="mb-3"),
-    ])
+    summary = dbc.Row([
+        dbc.Col([html.Div([html.H4("Cases"), html.H2(f"{n}")],
+                          className="kpi-card kpi-primary")], md=3),
+        dbc.Col([html.Div([html.H4("Med AHT"), html.H2(f"{med_aht:.0f} min")],
+                          className="kpi-card kpi-danger")], md=3),
+        dbc.Col([html.Div([html.H4("Med Routing"), html.H2(f"{med_routing:.1f} days")],
+                          className="kpi-card kpi-warning")], md=3),
+        dbc.Col([html.Div([html.H4("Med Messages"), html.H2(f"{med_msgs:.0f}")],
+                          className="kpi-card kpi-info")], md=3),
+    ], className="mb-3")
 
     table = dbc.Table.from_dataframe(
         detail_show, striped=True, bordered=True, hover=True, responsive=True,
         style={'fontSize': '0.8rem'}
     )
 
-    hops = len([q.strip() for q in path_str.split('→')])
-    title = f"{n} Cases on {hops}-Queue Path"
+    return True, title_prefix or f"{n} Cases", html.Div([summary, table])
 
-    return True, title, html.Div([summary, table])
+
+@callback(
+    [Output('journey-modal', 'is_open'),
+     Output('journey-modal-title', 'children'),
+     Output('journey-modal-body', 'children')],
+    [Input({'type': 'journey-path-row', 'index': ALL}, 'n_clicks'),
+     Input('forward-sankey', 'clickData'),
+     Input('backward-sankey', 'clickData')],
+    [State('journey-path-store', 'data'),
+     State('journey-fwd-link-store', 'data'),
+     State('journey-bwd-link-store', 'data')],
+    prevent_initial_call=True
+)
+def open_journey_modal(row_clicks, fwd_click, bwd_click, store_data, fwd_links, bwd_links):
+    triggered = ctx.triggered_id
+
+    # Table row click
+    if isinstance(triggered, dict) and triggered.get('type') == 'journey-path-row':
+        if not any(row_clicks) or not store_data:
+            return False, "", ""
+        row_idx = triggered['index']
+        paths = list(store_data.keys())
+        if row_idx >= len(paths):
+            return False, "", ""
+        path_str = paths[row_idx]
+        case_ids = store_data[path_str]
+        hops = len([q.strip() for q in path_str.split('→')])
+        return _build_case_detail_modal(case_ids, f"{len(case_ids)} Cases on {hops}-Queue Path")
+
+    # Sankey link click (forward or backward)
+    if triggered in ('forward-sankey', 'backward-sankey'):
+        click_data = fwd_click if triggered == 'forward-sankey' else bwd_click
+        link_store = fwd_links if triggered == 'forward-sankey' else bwd_links
+        if not click_data or not link_store:
+            return False, "", ""
+
+        # Sankey clickData for links has 'pointNumber' in the points list
+        points = click_data.get('points', [])
+        if not points:
+            return False, "", ""
+        pt = points[0]
+        # Link clicks have 'source' and 'target' keys
+        if 'source' not in pt and 'pointNumber' not in pt:
+            return False, "", ""
+
+        link_idx = str(pt.get('pointNumber', ''))
+        case_ids = link_store.get(link_idx, [])
+        if not case_ids:
+            return False, "", ""
+
+        src_label = pt.get('source', {}).get('label', '') if isinstance(pt.get('source'), dict) else ''
+        tgt_label = pt.get('target', {}).get('label', '') if isinstance(pt.get('target'), dict) else ''
+        direction = "Forward" if triggered == 'forward-sankey' else "Backward"
+        link_desc = f"{src_label} → {tgt_label}" if src_label and tgt_label else f"Link {link_idx}"
+        return _build_case_detail_modal(case_ids, f"{direction}: {len(case_ids)} Cases on {link_desc}")
+
+    return False, "", ""
 
 
 # ==================================
