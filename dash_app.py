@@ -922,14 +922,34 @@ def update_process_tab(start_date, end_date, queues, hours, segments):
     filtered_cases = filtered.CASE_ID.unique()
     df_filtered = df_raw[df_raw.CASE_ID.isin(filtered_cases)]
 
-    queue_impact = (
-        df_filtered.groupby("QUEUE_NEW")
-        .agg(total_delay_days=("DAYS_IN_QUEUE", "sum"),
-             median_days=("DAYS_IN_QUEUE", "median"),
-             volume=("CASE_ID", "nunique"))
-        .sort_values("total_delay_days", ascending=False)
-        .head(10).reset_index()
-    )
+    # Intermediary queues only: exclude first (entry) and last (resolution) queue per case
+    # These are the "bottleneck" queues where cases sit waiting during transfers
+    max_order = df_filtered.groupby('CASE_ID')['QUEUE_ORDER'].transform('max')
+    intermediary = df_filtered[
+        (df_filtered['QUEUE_ORDER'] > 1) &
+        (df_filtered['QUEUE_ORDER'] < max_order)
+    ]
+
+    if len(intermediary) > 0:
+        queue_impact = (
+            intermediary.groupby("QUEUE_NEW")
+            .agg(total_delay_days=("DAYS_IN_QUEUE", "sum"),
+                 median_days=("DAYS_IN_QUEUE", "median"),
+                 volume=("CASE_ID", "nunique"))
+            .sort_values("total_delay_days", ascending=False)
+            .head(10).reset_index()
+        )
+    else:
+        # Fallback if no intermediary queues (all cases are 0-1 transfers)
+        queue_impact = (
+            df_filtered.groupby("QUEUE_NEW")
+            .agg(total_delay_days=("DAYS_IN_QUEUE", "sum"),
+                 median_days=("DAYS_IN_QUEUE", "median"),
+                 volume=("CASE_ID", "nunique"))
+            .sort_values("total_delay_days", ascending=False)
+            .head(10).reset_index()
+        )
+
     queue_impact['cumulative_pct'] = (queue_impact['total_delay_days'].cumsum() /
                                       queue_impact['total_delay_days'].sum() * 100)
 
@@ -943,14 +963,18 @@ def update_process_tab(start_date, end_date, queues, hours, segments):
                    name="Cumulative %", mode='lines+markers',
                    marker_color=POWERBI_COLORS['dark'], line=dict(width=2)),
         secondary_y=True)
-    pareto_fig.update_xaxes(title_text="Queue")
+    pareto_fig.update_xaxes(title_text="Intermediary Queue")
     pareto_fig.update_yaxes(title_text="Total Delay Days", secondary_y=False)
     pareto_fig.update_yaxes(title_text="Cumulative %", secondary_y=True, range=[0, 105])
+    pareto_title = ("Top 10 Intermediary Bottleneck Queues (80/20 Pareto)"
+                    if len(intermediary) > 0 else "Top 10 Bottleneck Queues (80/20 Pareto)")
     pareto_fig.update_layout(
-        title="Top 10 Bottleneck Queues (80/20 Pareto)",
+        title=dict(text=pareto_title,
+                   font=dict(size=13, color='#201F1E', family='Segoe UI')),
         width=550, height=480, autosize=False,
         paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-        font=dict(family='Segoe UI'), yaxis=dict(showgrid=True, gridcolor='#EDEBE9')
+        font=dict(family='Segoe UI'), yaxis=dict(showgrid=True, gridcolor='#EDEBE9'),
+        margin=dict(l=50, r=20, t=60, b=80)
     )
 
     entry_perf = (
@@ -1206,124 +1230,22 @@ def update_hours_tab(start_date, end_date, queues, hours, segments):
 
     ih  = filtered[filtered.inhours == 1]
     ooh = filtered[filtered.inhours == 0]
-    if len(ooh) == 0:
-        return html.Div("No out-of-hours cases in current selection.", className="alert alert-warning")
 
-    ih_multi  = (ih.transfers  >= 2).mean() * 100
-    ooh_multi = (ooh.transfers >= 2).mean() * 100
-    ih_aht    = ih.total_active_aht.median()
-    ooh_aht   = ooh.total_active_aht.median()
+    ih_multi  = (ih.transfers >= 2).mean() * 100 if len(ih) > 0 else 0
+    ooh_multi = (ooh.transfers >= 2).mean() * 100 if len(ooh) > 0 else 0
+    ih_aht    = ih.total_active_aht.median() if len(ih) > 0 else 0
+    ooh_aht   = ooh.total_active_aht.median() if len(ooh) > 0 else 0
     ooh_aht_penalty = (ooh_aht / ih_aht - 1) * 100 if ih_aht > 0 else 0
-    ih_days   = ih.routing_days.median()
-    ooh_days  = ooh.routing_days.median()
 
     insight = html.Div([
         html.P([
             "Out-of-hours cases have ",
             html.Strong(f"{ooh_multi:.0f}% multi-transfer rate vs {ih_multi:.0f}% in-hours", style={'color': POWERBI_COLORS['danger']}),
-            "— AND each transfer takes ",
+            " — AND each transfer takes ",
             html.Strong(f"{ooh_aht_penalty:+.0f}% longer to handle.", style={'color': POWERBI_COLORS['danger']}),
-            "The OOH penalty compounds with each successive transfer."
+            " The OOH penalty compounds with each successive transfer."
         ], style={'margin': 0, 'fontSize': '0.92rem', 'color': '#333'})
     ], className="insight-card mb-4")
-
-    # Transfer distribution by hours type
-    tbh = (filtered.groupby(['transfer_bin', 'inhours']).size()
-           .reset_index(name='count'))
-    tbh['hours_label'] = tbh['inhours'].map({1: 'In Hours', 0: 'Out of Hours'})
-    total_by_h = tbh.groupby('hours_label')['count'].transform('sum')
-    tbh['pct'] = tbh['count'] / total_by_h * 100
-
-    dist_fig = go.Figure()
-    for label, color in [('In Hours', POWERBI_COLORS['success']),
-                         ('Out of Hours', POWERBI_COLORS['danger'])]:
-        d = tbh[tbh.hours_label == label]
-        dist_fig.add_trace(go.Bar(
-            x=d['transfer_bin'], y=d['pct'], name=label,
-            marker_color=color,
-            text=[f"{v:.0f}%" for v in d['pct']], textposition='outside'
-        ))
-    dist_fig.update_layout(
-        title=dict(text="Transfer Rate: In Hours vs Out of Hours",
-                   font=dict(size=13, color='#201F1E', family='Segoe UI')),
-        xaxis_title="Number of Transfers", yaxis_title="% of Cases",
-        barmode='group',
-        width=540, height=420, autosize=False,
-        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-        font=dict(family='Segoe UI'), yaxis=dict(showgrid=True, gridcolor='#EDEBE9'),
-        margin=dict(l=50, r=20, t=60, b=40)
-    )
-
-    # Helper: build annotated heatmap with smart per-cell text colors
-    def _build_heatmap(pivot, title, colorscale, fmt, unit, cb_title):
-        vals = pivot.values
-        x_labels = pivot.columns.tolist()
-        y_labels = pivot.index.tolist()
-        vmin, vmax = vals.min(), vals.max()
-        mid = (vmin + vmax) / 2 if vals.size > 0 else 0
-
-        fig = go.Figure(data=go.Heatmap(
-            z=vals, x=x_labels, y=y_labels,
-            colorscale=colorscale, showscale=True,
-            colorbar=dict(title=dict(text=cb_title, font=dict(size=11)),
-                          thickness=12, len=0.9, outlinewidth=0),
-            xgap=3, ygap=3,
-            hovertemplate=f'Transfers: %{{x}}<br>Hours: %{{y}}<br>{unit}: %{{z:{fmt}}}<extra></extra>'
-        ))
-        # Add annotations for per-cell text with smart color
-        annotations = []
-        for i, y_label in enumerate(y_labels):
-            for j, x_label in enumerate(x_labels):
-                v = vals[i][j]
-                font_color = 'white' if v > mid else '#201F1E'
-                annotations.append(dict(
-                    x=x_label, y=y_label,
-                    text=f"{v:{fmt}} {unit.lower()}",
-                    font=dict(size=15, family='Segoe UI Semibold', color=font_color),
-                    showarrow=False, xref='x', yref='y'
-                ))
-        fig.update_layout(
-            title=dict(text=title, font=dict(size=13, color='#201F1E', family='Segoe UI')),
-            xaxis=dict(title="Number of Transfers", side='bottom', tickfont=dict(size=12)),
-            yaxis=dict(tickfont=dict(size=12)),
-            width=540, height=280, autosize=False,
-            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-            font=dict(family='Segoe UI'),
-            margin=dict(l=110, r=60, t=55, b=45),
-            annotations=annotations
-        )
-        return fig
-
-    def _prepare_pivot(filtered_df, value_col, agg='median'):
-        mat = (filtered_df.groupby(['transfer_bin', 'inhours'])[value_col]
-               .agg(agg).reset_index())
-        mat['hours_label'] = mat['inhours'].map({1: 'In Hours', 0: 'Out of Hours'})
-        pivot = mat.pivot(index='hours_label', columns='transfer_bin', values=value_col)
-        for label in ['Out of Hours', 'In Hours']:
-            if label not in pivot.index:
-                pivot.loc[label] = 0
-        return pivot.loc[['Out of Hours', 'In Hours']]
-
-    # --- Heatmap 1: Median AHT ---
-    aht_pivot = _prepare_pivot(filtered, 'total_active_aht')
-    aht_heat = _build_heatmap(
-        aht_pivot, "Median Handle Time — Hours x Transfers",
-        [[0, '#E6F4EA'], [0.3, '#A8DAB5'], [0.55, '#FDD835'], [0.8, '#EF6C00'], [1, '#C62828']],
-        '.0f', 'min', 'AHT (min)')
-
-    # --- Heatmap 2: Routing days ---
-    days_pivot = _prepare_pivot(filtered, 'routing_days')
-    days_heat = _build_heatmap(
-        days_pivot, "Median Routing Wait — Hours x Transfers",
-        [[0, '#E3F2FD'], [0.3, '#90CAF9'], [0.55, '#FDD835'], [0.8, '#EF6C00'], [1, '#C62828']],
-        '.1f', 'days', 'Days')
-
-    # --- Heatmap 3: Customer messages ---
-    msg_pivot = _prepare_pivot(filtered, 'messages')
-    msg_heat = _build_heatmap(
-        msg_pivot, "Median Customer Messages — Hours x Transfers",
-        [[0, '#F3E5F5'], [0.3, '#CE93D8'], [0.55, '#FDD835'], [0.8, '#EF6C00'], [1, '#C62828']],
-        '.0f', 'msgs', 'Messages')
 
     summary_cards = dbc.Row([
         dbc.Col([html.Div([html.H4("Multi-Transfer Rate (IH)"),  html.H2(f"{ih_multi:.0f}%")],
@@ -1336,26 +1258,145 @@ def update_hours_tab(start_date, end_date, queues, hours, segments):
                           className="kpi-card kpi-danger animated-card")], md=3),
     ], className="mb-4")
 
+    # Toggle buttons for heatmap views
+    view_selector = html.Div([
+        html.Div("Heatmap View", style={
+            'fontSize': '0.7rem', 'fontWeight': '700', 'color': '#888',
+            'textTransform': 'uppercase', 'letterSpacing': '0.8px',
+            'marginBottom': '0.5rem',
+        }),
+        dbc.RadioItems(
+            id='hours-heatmap-view',
+            options=[
+                {'label': 'Median AHT',         'value': 'aht'},
+                {'label': 'Customer Messages',   'value': 'messages'},
+                {'label': 'Transfer Volume',     'value': 'volume'},
+                {'label': 'Median Routing Wait', 'value': 'routing'},
+                {'label': 'In/Out Hours Split',  'value': 'inhours'},
+            ],
+            value='aht',
+            inline=True,
+            input_class_name="btn-check",
+            label_class_name="btn btn-outline-primary btn-sm me-2",
+            label_checked_class_name="active",
+        ),
+    ], style={'marginBottom': '1rem'})
+
     return html.Div([
         html.H5("Hours & Transfer Effect",
                 style={'fontWeight': '700', 'color': '#201F1E', 'marginBottom': '0.3rem'}),
-        html.P("Out-of-hours cases accumulate more transfers AND each transfer hits harder — a compounding problem.",
+        html.P("Explore operational patterns across day of week and hour of day. Toggle views to reveal where demand, effort, and delays concentrate.",
                className="text-muted mb-3"),
         insight,
         summary_cards,
         html.Hr(className="divider"),
-        dbc.Row([
-            dbc.Col([dcc.Graph(figure=dist_fig, config={'responsive': False})], md=6),
-            dbc.Col([dcc.Graph(figure=aht_heat, config={'responsive': False})], md=6),
-        ], className="mb-2"),
-        html.Hr(className="divider"),
-        html.H6("Compounding Effect Matrix", style={'fontWeight': '600', 'color': '#201F1E', 'marginBottom': '0.5rem'}),
-        html.P("Each heatmap shows how the penalty compounds when out-of-hours cases hit multiple transfers.",
-               className="text-muted mb-3", style={'fontSize': '0.88rem'}),
-        dbc.Row([
-            dbc.Col([dcc.Graph(figure=days_heat, config={'responsive': False})], md=6),
-            dbc.Col([dcc.Graph(figure=msg_heat, config={'responsive': False})], md=6),
-        ], className="mb-2"),
+        view_selector,
+        html.Div(id='hours-heatmap-output'),
+    ])
+
+
+DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+HOUR_LABELS = [f'{h:02d}:00' for h in range(24)]
+
+
+@callback(
+    Output('hours-heatmap-output', 'children'),
+    [Input('hours-heatmap-view', 'value'),
+     Input('hours-date-filter', 'start_date'), Input('hours-date-filter', 'end_date'),
+     Input('hours-queue-filter', 'value'),    Input('hours-hours-filter', 'value'),
+     Input('hours-segment-filter', 'value')]
+)
+def update_hours_heatmap(view, start_date, end_date, queues, hours, segments):
+    filtered = filter_data(case_df, start_date, end_date, queues, hours, segments)
+    if len(filtered) == 0:
+        return html.Div("No data for current filters.", className="alert alert-warning")
+
+    # Build Day x Hour pivot
+    hm_config = {
+        'aht':      {'col': 'total_active_aht', 'agg': 'median', 'fmt': '.0f', 'unit': 'min',
+                     'title': 'Median Handle Time (min) by Day and Hour',
+                     'colorscale': [[0, '#E8F5E9'], [0.25, '#81C784'], [0.5, '#FDD835'],
+                                    [0.75, '#EF6C00'], [1, '#B71C1C']]},
+        'messages': {'col': 'messages', 'agg': 'median', 'fmt': '.0f', 'unit': 'msgs',
+                     'title': 'Median Customer Messages by Day and Hour',
+                     'colorscale': [[0, '#E3F2FD'], [0.25, '#64B5F6'], [0.5, '#FDD835'],
+                                    [0.75, '#EF6C00'], [1, '#B71C1C']]},
+        'volume':   {'col': 'CASE_ID', 'agg': 'count', 'fmt': '.0f', 'unit': 'cases',
+                     'title': 'Transfer Volume (Case Count) by Day and Hour',
+                     'colorscale': [[0, '#F3E5F5'], [0.25, '#BA68C8'], [0.5, '#FDD835'],
+                                    [0.75, '#EF6C00'], [1, '#B71C1C']]},
+        'routing':  {'col': 'routing_days', 'agg': 'median', 'fmt': '.1f', 'unit': 'days',
+                     'title': 'Median Routing Wait (days) by Day and Hour',
+                     'colorscale': [[0, '#FFF3E0'], [0.25, '#FFB74D'], [0.5, '#FDD835'],
+                                    [0.75, '#E65100'], [1, '#B71C1C']]},
+        'inhours':  {'col': 'inhours', 'agg': 'mean', 'fmt': '.0%', 'unit': '% IH',
+                     'title': 'In-Hours Rate (%) by Day and Hour',
+                     'colorscale': [[0, '#FFCDD2'], [0.5, '#FFF9C4'], [1, '#C8E6C9']]},
+    }
+
+    cfg = hm_config.get(view, hm_config['aht'])
+    col, agg, fmt, unit = cfg['col'], cfg['agg'], cfg['fmt'], cfg['unit']
+
+    pivot = (filtered.groupby(['day_of_week', 'hour_of_day'])[col]
+             .agg(agg).reset_index())
+    pivot_wide = pivot.pivot(index='day_of_week', columns='hour_of_day', values=col)
+    # Ensure all days and hours present
+    pivot_wide = pivot_wide.reindex(index=range(7), columns=range(24), fill_value=0)
+
+    vals = pivot_wide.values
+    vmin, vmax = np.nanmin(vals), np.nanmax(vals)
+    mid = (vmin + vmax) / 2 if vals.size > 0 else 0
+
+    # Build annotations with smart text color
+    annotations = []
+    for i in range(7):
+        for j in range(24):
+            v = vals[i][j]
+            if np.isnan(v):
+                continue
+            font_color = 'white' if v > mid else '#333'
+            if view == 'inhours':
+                text = f"{v:.0%}"
+            elif fmt == '.1f':
+                text = f"{v:.1f}"
+            else:
+                text = f"{v:.0f}"
+            annotations.append(dict(
+                x=HOUR_LABELS[j], y=DAY_NAMES[i], text=text,
+                font=dict(size=10, family='Segoe UI', color=font_color),
+                showarrow=False, xref='x', yref='y'
+            ))
+
+    fig = go.Figure(data=go.Heatmap(
+        z=vals,
+        x=HOUR_LABELS,
+        y=DAY_NAMES,
+        colorscale=cfg['colorscale'],
+        showscale=True,
+        colorbar=dict(title=dict(text=unit, font=dict(size=11)),
+                      thickness=14, len=0.85, outlinewidth=0),
+        xgap=2, ygap=2,
+        hovertemplate='%{y}, %{x}<br>' + unit + ': %{z' + (':' + fmt if fmt != '.0%' else '') + '}<extra></extra>',
+    ))
+
+    fig.update_layout(
+        title=dict(text=cfg['title'],
+                   font=dict(size=14, color='#201F1E', family='Segoe UI')),
+        xaxis=dict(title="Hour of Day", tickfont=dict(size=10), tickangle=0,
+                   dtick=1, side='bottom'),
+        yaxis=dict(tickfont=dict(size=11), autorange='reversed'),
+        width=1100, height=380, autosize=False,
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(family='Segoe UI'),
+        margin=dict(l=100, r=60, t=55, b=50),
+        annotations=annotations,
+    )
+
+    return html.Div([
+        dcc.Graph(figure=fig, config={'responsive': False}),
+        html.P(f"Showing {len(filtered):,} cases. Cells show {unit} values. Darker = higher.",
+               style={'fontSize': '0.78rem', 'color': '#999', 'marginTop': '0.5rem',
+                      'textAlign': 'center'}),
     ])
 
 
