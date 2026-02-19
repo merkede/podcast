@@ -164,18 +164,10 @@ def prepare_data(df):
     )
     case = case.merge(loops, on="CASE_ID", how="left")
 
-    # Fill NaN in key numeric columns
-    case['transfers'] = case['transfers'].fillna(0).astype(int)
-    case['inhours'] = case['inhours'].fillna(1).astype(int)
-    case['messages'] = case['messages'].fillna(0)
-    case['total_active_aht'] = case['total_active_aht'].fillna(0)
-    case['routing_days'] = case['routing_days'].fillna(0)
-    case['loop_flag'] = case['loop_flag'].fillna(0).astype(int)
-
-    case['message_intensity'] = case['messages'] / (case['total_active_aht'] + 1)
-    case['interaction_density'] = case['interactions'].fillna(0) / (case['total_active_aht'] + 1)
-    case['ftr'] = (case['transfers'] == 0).astype(int)
-    case['transfer_bin'] = pd.cut(case['transfers'],
+    case['message_intensity'] = case['messages'] / (case['total_active_aht'].fillna(0) + 1)
+    case['interaction_density'] = case['interactions'] / (case['total_active_aht'].fillna(0) + 1)
+    case['ftr'] = (case['transfers'].fillna(0) == 0).astype(int)
+    case['transfer_bin'] = pd.cut(case['transfers'].fillna(0),
                                   bins=[-0.1, 0, 1, 2, 100],
                                   labels=['0', '1', '2', '3+'])
     # Segment: Retail = starts with "HD RTL A" but NOT "HD RTL A PRT*"; Claims = everything else
@@ -198,10 +190,14 @@ def build_ml_models(case_df, df_raw):
     artifacts = {}
     df = case_df.copy()
 
+    # Fill NaN on ML copy only — does NOT affect the shared case_df used by other tabs
+    for col in ['transfers', 'inhours', 'messages', 'total_active_aht',
+                'routing_days', 'loop_flag', 'message_intensity']:
+        df[col] = df[col].fillna(0)
+    df['inhours'] = df['inhours'].astype(int)
+
     df['day_of_week'] = pd.to_datetime(df['created_at'], errors='coerce').dt.dayofweek
     df['hour_of_day'] = pd.to_datetime(df['close_datetime'], errors='coerce').dt.hour
-
-    # Fill NaN in derived time features with median (fallback to 0 if all NaN)
     df['day_of_week'] = df['day_of_week'].fillna(df['day_of_week'].median() if df['day_of_week'].notna().any() else 0).astype(int)
     df['hour_of_day'] = df['hour_of_day'].fillna(df['hour_of_day'].median() if df['hour_of_day'].notna().any() else 12).astype(int)
 
@@ -368,10 +364,18 @@ def build_ml_models(case_df, df_raw):
         'feature_names': list(X_cluster.columns),
     }
 
-    return df, artifacts
+    # Only return ML-specific columns to add back — don't overwrite original data
+    ml_cols = ['day_of_week', 'hour_of_day', 'transfer_risk', 'recommended_queue',
+               'queue_match', 'journey_cluster', 'cluster_name']
+    return df[['CASE_ID'] + ml_cols], artifacts
 
 
-case_df, ml_artifacts = build_ml_models(case_df, df_raw)
+_ml_result, ml_artifacts = build_ml_models(case_df, df_raw)
+# Merge ML columns into case_df without overwriting original values
+for col in _ml_result.columns:
+    if col != 'CASE_ID':
+        case_df[col] = _ml_result[col].values
+del _ml_result
 
 min_date = case_df['created_at'].min().date()
 max_date = case_df['created_at'].max().date()
