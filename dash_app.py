@@ -537,11 +537,12 @@ def create_filter_section(tab_id):
     ], className="filter-panel mb-4")
 
 
-def guide_statement(text):
-    """Render a business guide statement banner at the top of a tab."""
+def guide_statement(children):
+    """Render a business guide statement banner at the top of a tab.
+    Accepts a string or list of html elements (use html.Strong for bold)."""
     return html.Div(
-        html.P(text, style={'margin': 0, 'fontSize': '0.88rem', 'color': '#444',
-                            'lineHeight': '1.6', 'fontStyle': 'italic'}),
+        html.P(children, style={'margin': 0, 'fontSize': '0.88rem', 'color': '#444',
+                                'lineHeight': '1.6', 'fontStyle': 'italic'}),
         style={'background': '#F3F2F1', 'borderLeft': '3px solid #0078D4',
                'borderRadius': '0 6px 6px 0', 'padding': '0.8rem 1.2rem',
                'marginBottom': '1.2rem'}
@@ -1081,12 +1082,14 @@ def update_process_tab(start_date, end_date, queues, hours, segments):
     ], className="mb-4")
 
     return html.Div([
-        guide_statement(
-            "Not all queues add value, some just add delay. The intermediary queues shown here "
-            "are where Messenger cases sit waiting between handoffs, contributing nothing to resolution. "
-            "If a queue appears frequently in the Pareto, it's either a structural bottleneck or a sign "
-            "that cases are being sent there by mistake."
-        ),
+        guide_statement([
+            html.Strong("Not all queues add value, some just add delay. "),
+            "The intermediary queues shown here are where Messenger cases sit waiting between handoffs, ",
+            html.Strong("contributing nothing to resolution. "),
+            "If a queue appears frequently in the Pareto, it's either a ",
+            html.Strong("structural bottleneck"),
+            " or a sign that cases are being sent there by mistake.",
+        ]),
         kpi_row,
         html.Hr(className="divider"),
         dbc.Row([
@@ -1277,12 +1280,16 @@ def update_impact_tab(start_date, end_date, queues, hours, segments):
     ], className="insight-card mb-3")
 
     return html.Div([
-        guide_statement(
-            f"Every transfer doesn't just delay the customer, it inflates the total effort. "
-            f"A case that gets transferred 3+ times costs {aht_pct:.0f}% more handle time and generates "
-            f"{msg_pct:.0f}% more customer messages than one resolved first-touch. "
-            f"This is the compounding cost of mis-routing."
-        ),
+        guide_statement([
+            "Every transfer doesn't just delay the customer, ",
+            html.Strong("it inflates the total effort. "),
+            "A case that gets transferred 3+ times costs ",
+            html.Strong(f"{aht_pct:.0f}% more handle time"),
+            " and generates ",
+            html.Strong(f"{msg_pct:.0f}% more customer messages"),
+            " than one resolved first-touch. ",
+            html.Strong("This is the compounding cost of mis-routing."),
+        ]),
         kpi_row,
         insight,
         html.Hr(className="divider"),
@@ -1365,12 +1372,15 @@ def update_hours_tab(start_date, end_date, queues, hours, segments):
     ], style={'marginBottom': '1rem'})
 
     return html.Div([
-        guide_statement(
-            f"Out-of-hours cases don't just transfer more often, they transfer harder. "
-            f"The OOH multi-transfer rate is {ooh_multi:.0f}% vs {ih_multi:.0f}% in-hours, "
-            f"and each of those transfers costs {ooh_aht_penalty:+.0f}% more handle time. "
-            f"The heatmap below reveals exactly when the routing breaks down across the week."
-        ),
+        guide_statement([
+            "Out-of-hours cases don't just transfer more often, ",
+            html.Strong("they transfer harder. "),
+            "The OOH multi-transfer rate is ",
+            html.Strong(f"{ooh_multi:.0f}% vs {ih_multi:.0f}% in-hours"),
+            ", and each of those transfers costs ",
+            html.Strong(f"{ooh_aht_penalty:+.0f}% more handle time. "),
+            "The heatmap below reveals exactly when the routing breaks down across the week.",
+        ]),
         insight,
         summary_cards,
         html.Hr(className="divider"),
@@ -1501,11 +1511,13 @@ def update_qi_tab(start_date, end_date, queues, hours, segments):
 
     all_queues = sorted(df_raw.QUEUE_NEW.dropna().unique())
     return html.Div([
-        guide_statement(
-            "Every queue tells a story: is it resolving cases, or just passing them along? "
-            "Select a queue below to see who's sending it work, where it sends cases next, and how long they dwell. "
-            "If a queue has high inbound volume but low resolution, it's acting as an expensive middleman."
-        ),
+        guide_statement([
+            "Every queue tells a story: ",
+            html.Strong("is it resolving cases, or just passing them along? "),
+            "Select a queue below to see who's sending it work, where it sends cases next, and how long they dwell. ",
+            "If a queue has high inbound volume but low resolution, it's acting as ",
+            html.Strong("an expensive middleman."),
+        ]),
         dbc.Row([
             dbc.Col([
                 html.Div([
@@ -1674,11 +1686,12 @@ def update_journey_tab(start_date, end_date, queues, hours, segments):
 
     all_queues = sorted(df_raw.QUEUE_NEW.dropna().unique())
     return html.Div([
-        guide_statement(
-            "The shortest path to resolution is the cheapest one. This tab maps how Messenger cases "
-            "actually flow through the business: the most common routes, the longest chains, and the "
-            "unnecessary detours. Every extra hop on the journey is time, effort, and customer patience burned."
-        ),
+        guide_statement([
+            html.Strong("The shortest path to resolution is the cheapest one. "),
+            "This tab maps how Messenger cases actually flow through the business: the most common routes, ",
+            "the longest chains, and the unnecessary detours. ",
+            html.Strong("Every extra hop on the journey is time, effort, and customer patience burned."),
+        ]),
 
         dbc.Row([
             dbc.Col([
@@ -2063,11 +2076,12 @@ def update_explorer_tab(start_date, end_date, queues, hours, segments):
     ], style={'marginBottom': '1rem', 'display': 'flex', 'alignItems': 'center'})
 
     return html.Div([
-        guide_statement(
-            "Everything in this report is built from the data below. Browse case-level summaries, "
-            "queue-level detail, or full transfer paths, then download the CSV to run your own analysis. "
-            "No black boxes."
-        ),
+        guide_statement([
+            html.Strong("Everything in this report is built from the data below. "),
+            "Browse case-level summaries, queue-level detail, or full transfer paths, then download the CSV ",
+            "to run your own analysis. ",
+            html.Strong("No black boxes."),
+        ]),
         xfer_slicer,
         view_selector,
         download_bar,
@@ -2413,11 +2427,13 @@ def build_ml_insights_tab():
     ])
 
     return html.Div([
-        guide_statement(
-            "These models learn from your routing data to answer three questions humans struggle with at scale: "
-            "which cases are most likely to bounce, where should they have gone in the first place, and what "
-            "behavioural patterns keep repeating? The answers are predictions, not rules. Treat them as a second opinion."
-        ),
+        guide_statement([
+            "These models learn from your routing data to answer ",
+            html.Strong("three questions humans struggle with at scale: "),
+            "which cases are most likely to bounce, where should they have gone in the first place, and what ",
+            "behavioural patterns keep repeating? The answers are predictions, not rules. ",
+            html.Strong("Treat them as a second opinion."),
+        ]),
         model1_section,
         html.Hr(className="divider"),
         model2_section,
