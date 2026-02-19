@@ -1123,27 +1123,31 @@ def update_impact_tab(start_date, end_date, queues, hours, segments):
         '3+': POWERBI_COLORS['danger']
     }
 
-    # Strip + Box — AHT (capped at P95, no outlier markers)
+    # Box plots — AHT (capped at P95, no individual dots, mean + median labelled)
     aht_fig = go.Figure()
     for tbin in ['0', '1', '2', '3+']:
         data = filtered[filtered.transfer_bin == tbin]['total_active_aht']
         capped = data[data <= p95_aht].dropna()
         label = f"{tbin} transfer{'s' if tbin != '1' else ''}"
         if len(capped) > 0:
-            # Jittered strip points
             aht_fig.add_trace(go.Box(
                 y=capped,
                 name=label,
-                marker=dict(color=bin_colors[tbin], size=5, opacity=0.45),
+                marker=dict(color=bin_colors[tbin]),
                 line=dict(color=bin_colors[tbin], width=1.5),
-                fillcolor='rgba(0,0,0,0)',
-                boxpoints='all',
-                jitter=0.4,
-                pointpos=0,
-                boxmean='sd',
+                fillcolor=bin_colors[tbin],
+                boxpoints=False,
+                boxmean=True,
                 whiskerwidth=0.6,
-                opacity=0.9,
+                opacity=0.35,
             ))
+            med_val = capped.median()
+            mean_val = capped.mean()
+            aht_fig.add_annotation(x=label, y=med_val, text=f"Median: {med_val:.0f}",
+                                   showarrow=False, xshift=70, font=dict(size=10, color=bin_colors[tbin]))
+            aht_fig.add_annotation(x=label, y=mean_val, text=f"Mean: {mean_val:.0f}",
+                                   showarrow=False, xshift=65, font=dict(size=10, color='#666'),
+                                   yshift=12 if abs(mean_val - med_val) < p95_aht * 0.05 else 0)
     aht_fig.update_layout(
         title=dict(text="Handle Time Distribution by Transfer Count",
                    font=dict(size=13, color='#201F1E', family='Segoe UI')),
@@ -1154,10 +1158,10 @@ def update_impact_tab(start_date, end_date, queues, hours, segments):
         yaxis=dict(showgrid=True, gridcolor='#EDEBE9', zeroline=False),
         xaxis=dict(showgrid=False),
         showlegend=False,
-        margin=dict(l=50, r=20, t=60, b=40)
+        margin=dict(l=50, r=80, t=60, b=40)
     )
 
-    # Strip + Box — Messages (capped at P95, no outlier markers)
+    # Box plots — Messages (capped at P95, no individual dots, mean + median labelled)
     msg_fig = go.Figure()
     for tbin in ['0', '1', '2', '3+']:
         data = filtered[filtered.transfer_bin == tbin]['messages']
@@ -1167,16 +1171,21 @@ def update_impact_tab(start_date, end_date, queues, hours, segments):
             msg_fig.add_trace(go.Box(
                 y=capped,
                 name=label,
-                marker=dict(color=bin_colors[tbin], size=5, opacity=0.45),
+                marker=dict(color=bin_colors[tbin]),
                 line=dict(color=bin_colors[tbin], width=1.5),
-                fillcolor='rgba(0,0,0,0)',
-                boxpoints='all',
-                jitter=0.4,
-                pointpos=0,
-                boxmean='sd',
+                fillcolor=bin_colors[tbin],
+                boxpoints=False,
+                boxmean=True,
                 whiskerwidth=0.6,
-                opacity=0.9,
+                opacity=0.35,
             ))
+            med_val = capped.median()
+            mean_val = capped.mean()
+            msg_fig.add_annotation(x=label, y=med_val, text=f"Median: {med_val:.0f}",
+                                   showarrow=False, xshift=70, font=dict(size=10, color=bin_colors[tbin]))
+            msg_fig.add_annotation(x=label, y=mean_val, text=f"Mean: {mean_val:.0f}",
+                                   showarrow=False, xshift=65, font=dict(size=10, color='#666'),
+                                   yshift=12 if abs(mean_val - med_val) < p95_msg * 0.05 else 0)
     msg_fig.update_layout(
         title=dict(text="Customer Messages by Transfer Count",
                    font=dict(size=13, color='#201F1E', family='Segoe UI')),
@@ -1187,7 +1196,7 @@ def update_impact_tab(start_date, end_date, queues, hours, segments):
         yaxis=dict(showgrid=True, gridcolor='#EDEBE9', zeroline=False),
         xaxis=dict(showgrid=False),
         showlegend=False,
-        margin=dict(l=50, r=20, t=60, b=40)
+        margin=dict(l=50, r=80, t=60, b=40)
     )
 
     # Dual escalation index (both AHT + Messages indexed to 100 at 0 transfers)
