@@ -48,22 +48,22 @@ def generate_sample_data():
 
         if complexity == 'simple':
             num_queues = 1
-            base_aht = np.random.uniform(30, 120)
+            base_aht = np.random.uniform(30, 120) * 60  # seconds
             base_days = np.random.uniform(0, 1)
             base_messages = np.random.randint(1, 3)
         elif complexity == 'medium':
             num_queues = 2
-            base_aht = np.random.uniform(80, 200)
+            base_aht = np.random.uniform(80, 200) * 60  # seconds
             base_days = np.random.uniform(1, 3)
             base_messages = np.random.randint(2, 6)
         elif complexity == 'complex':
             num_queues = np.random.choice([3, 4])
-            base_aht = np.random.uniform(150, 350)
+            base_aht = np.random.uniform(150, 350) * 60  # seconds
             base_days = np.random.uniform(2, 7)
             base_messages = np.random.randint(4, 10)
         else:
             num_queues = np.random.choice([4, 5, 6])
-            base_aht = np.random.uniform(250, 500)
+            base_aht = np.random.uniform(250, 500) * 60  # seconds
             base_days = np.random.uniform(5, 15)
             base_messages = np.random.randint(6, 15)
 
@@ -163,6 +163,9 @@ def prepare_data(df):
         .reset_index(name="loop_flag")
     )
     case = case.merge(loops, on="CASE_ID", how="left")
+
+    # Convert AHT from seconds to minutes (source data is in seconds)
+    case['total_active_aht'] = case['total_active_aht'] / 60
 
     case['message_intensity'] = case['messages'] / (case['total_active_aht'].fillna(0) + 1)
     case['interaction_density'] = case['interactions'] / (case['total_active_aht'].fillna(0) + 1)
@@ -472,9 +475,9 @@ def create_filter_section(tab_id):
                             id=f'{tab_id}-queue-filter',
                             options=[{'label': q, 'value': q}
                                      for q in sorted(case_df.entry_queue.dropna().unique())],
-                            value=sorted(case_df.entry_queue.dropna().unique()),
+                            value=[],
                             multi=True,
-                            placeholder="Select queues...",
+                            placeholder="All queues (select to filter)",
                             style={'fontSize': '0.82rem'}
                         ),
                     ], className="slicer-body")
@@ -534,14 +537,16 @@ def create_filter_section(tab_id):
 
 
 def filter_data(case_data, start_date, end_date, queues, hours, segments=None):
-    if not queues or not hours:
+    if not hours:
         return pd.DataFrame()
     mask = (
         (case_data.created_at.dt.date >= pd.to_datetime(start_date).date()) &
         (case_data.created_at.dt.date <= pd.to_datetime(end_date).date()) &
-        (case_data.entry_queue.isin(queues)) &
         (case_data.inhours.isin(hours))
     )
+    # Empty queue selection = all queues
+    if queues:
+        mask = mask & case_data.entry_queue.isin(queues)
     if segments:
         mask = mask & case_data.segment.isin(segments)
     return case_data[mask]
