@@ -1,6 +1,6 @@
 """
 Executive Case Routing Analytics Dashboard - Dash Version
-7-Tab structure: Overview | Process | Cost & Effort | Hours Effect | Queue Intel | Journey | Data Explorer
+8-Tab structure: Overview | Process | Cost & Effort | Hours Effect | Queue Intel | Journey | Data Explorer | ML Insights
 """
 
 import dash
@@ -12,6 +12,18 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning)
+
+# ML imports
+from sklearn.ensemble import (RandomForestClassifier, GradientBoostingClassifier,
+                               HistGradientBoostingClassifier)
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import cross_val_score, StratifiedKFold
+from sklearn.metrics import silhouette_score
+from sklearn.decomposition import PCA
+from sklearn.inspection import permutation_importance
 
 # ==================================
 # GENERATE SAMPLE DATA
@@ -158,10 +170,184 @@ def prepare_data(df):
     case['transfer_bin'] = pd.cut(case['transfers'],
                                   bins=[-0.1, 0, 1, 2, 100],
                                   labels=['0', '1', '2', '3+'])
+    # Segment: Retail = starts with "HD RTL A" but NOT "HD RTL A PRT*"; Claims = everything else
+    case['segment'] = np.where(
+        case['entry_queue'].str.startswith('HD RTL A') & ~case['entry_queue'].str.startswith('HD RTL A PRT'),
+        'Retail', 'Claims'
+    )
     return df, case
 
 
 df_raw, case_df = prepare_data(df_raw)
+
+# ==================================
+# ML MODEL TRAINING
+# ==================================
+
+def build_ml_models(case_df, df_raw):
+    """Train 3 ML models at startup. Compares RF vs GBM vs HistGBT for supervised tasks."""
+    artifacts = {}
+    df = case_df.copy()
+
+    df['day_of_week'] = df['created_at'].dt.dayofweek
+    df['hour_of_day'] = df['close_datetime'].dt.hour
+
+    feature_cols_base = ['inhours', 'day_of_week', 'hour_of_day']
+    entry_dummies = pd.get_dummies(df['entry_queue'], prefix='eq')
+    X = pd.concat([df[feature_cols_base], entry_dummies], axis=1).astype(float)
+
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+    # MODEL 1: Transfer Risk (Binary)
+    y_transfer = (df['ftr'] == 0).astype(int)
+
+    candidates_m1 = {
+        'Random Forest': RandomForestClassifier(
+            n_estimators=100, max_depth=5, min_samples_leaf=10,
+            class_weight='balanced', random_state=42),
+        'Gradient Boosting': GradientBoostingClassifier(
+            n_estimators=80, max_depth=4, min_samples_leaf=10,
+            learning_rate=0.1, random_state=42),
+        'Hist Gradient Boost': HistGradientBoostingClassifier(
+            max_iter=80, max_depth=4, min_samples_leaf=10,
+            learning_rate=0.1, class_weight='balanced', random_state=42),
+    }
+
+    m1_scores = {}
+    for name, model in candidates_m1.items():
+        scores = cross_val_score(model, X, y_transfer, cv=cv, scoring='roc_auc')
+        m1_scores[name] = {'mean': scores.mean(), 'std': scores.std()}
+
+    best_m1_name = max(m1_scores, key=lambda k: m1_scores[k]['mean'])
+    best_m1 = candidates_m1[best_m1_name]
+    best_m1.fit(X, y_transfer)
+    df['transfer_risk'] = (best_m1.predict_proba(X)[:, 1] * 100).round(1)
+
+    if hasattr(best_m1, 'feature_importances_'):
+        m1_importances = best_m1.feature_importances_
+    else:
+        perm = permutation_importance(best_m1, X, y_transfer, n_repeats=10, random_state=42)
+        m1_importances = perm.importances_mean
+
+    artifacts['model1'] = {
+        'model': best_m1, 'best_name': best_m1_name, 'all_scores': m1_scores,
+        'feature_names': list(X.columns), 'importances': m1_importances,
+        'cv_auc_mean': m1_scores[best_m1_name]['mean'],
+        'cv_auc_std': m1_scores[best_m1_name]['std'],
+    }
+
+    # MODEL 2: Optimal First-Queue Recommendation (Multiclass)
+    y_queue = df['final_queue']
+
+    candidates_m2 = {
+        'Random Forest': RandomForestClassifier(
+            n_estimators=100, max_depth=6, min_samples_leaf=5,
+            class_weight='balanced', random_state=42),
+        'Gradient Boosting': GradientBoostingClassifier(
+            n_estimators=80, max_depth=5, min_samples_leaf=5,
+            learning_rate=0.1, random_state=42),
+        'Hist Gradient Boost': HistGradientBoostingClassifier(
+            max_iter=80, max_depth=5, min_samples_leaf=5,
+            learning_rate=0.1, class_weight='balanced', random_state=42),
+    }
+
+    m2_scores = {}
+    for name, model in candidates_m2.items():
+        scores = cross_val_score(model, X, y_queue, cv=cv, scoring='accuracy')
+        m2_scores[name] = {'mean': scores.mean(), 'std': scores.std()}
+
+    best_m2_name = max(m2_scores, key=lambda k: m2_scores[k]['mean'])
+    best_m2 = candidates_m2[best_m2_name]
+    best_m2.fit(X, y_queue)
+    df['recommended_queue'] = best_m2.predict(X)
+    df['queue_match'] = (df['recommended_queue'] == df['final_queue']).astype(int)
+
+    if hasattr(best_m2, 'feature_importances_'):
+        m2_importances = best_m2.feature_importances_
+    else:
+        perm = permutation_importance(best_m2, X, y_queue, n_repeats=10, random_state=42)
+        m2_importances = perm.importances_mean
+
+    artifacts['model2'] = {
+        'model': best_m2, 'best_name': best_m2_name, 'all_scores': m2_scores,
+        'feature_names': list(X.columns), 'importances': m2_importances,
+        'cv_acc_mean': m2_scores[best_m2_name]['mean'],
+        'cv_acc_std': m2_scores[best_m2_name]['std'],
+    }
+
+    # MODEL 3: Journey Clustering (Unsupervised)
+    queue_counts = df_raw.groupby(['CASE_ID', 'QUEUE_NEW']).size().unstack(fill_value=0)
+    queue_counts.columns = ['qc_' + c for c in queue_counts.columns]
+
+    cluster_features = ['transfers', 'routing_days', 'total_active_aht',
+                        'messages', 'loop_flag', 'inhours', 'message_intensity']
+    X_cluster_base = df.set_index('CASE_ID')[cluster_features]
+    X_cluster = X_cluster_base.join(queue_counts, how='left').fillna(0)
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X_cluster)
+
+    best_k, best_sil = 4, -1
+    for k in [3, 4, 5, 6]:
+        km_temp = KMeans(n_clusters=k, n_init=10, random_state=42)
+        labels_temp = km_temp.fit_predict(X_scaled)
+        sil = silhouette_score(X_scaled, labels_temp)
+        if sil > best_sil:
+            best_k, best_sil = k, sil
+
+    km = KMeans(n_clusters=best_k, n_init=10, random_state=42)
+    cluster_labels = km.fit_predict(X_scaled)
+
+    pca = PCA(n_components=2, random_state=42)
+    pca_coords = pca.fit_transform(X_scaled)
+
+    df['journey_cluster'] = cluster_labels
+
+    cluster_profiles = df.groupby('journey_cluster').agg(
+        avg_transfers=('transfers', 'mean'), avg_routing=('routing_days', 'mean'),
+        avg_aht=('total_active_aht', 'mean'), avg_messages=('messages', 'mean'),
+        loop_rate=('loop_flag', 'mean'), count=('CASE_ID', 'count'),
+    )
+
+    sorted_clusters = cluster_profiles.sort_values('avg_transfers')
+    name_map = {}
+    for i, (idx, row) in enumerate(sorted_clusters.iterrows()):
+        if row['loop_rate'] > 0.25 and row['avg_transfers'] > 1:
+            name_map[idx] = 'Ping-Pong Loop'
+        elif row['avg_transfers'] < 0.5:
+            name_map[idx] = 'Quick Resolve'
+        elif row['avg_transfers'] >= 3:
+            name_map[idx] = 'Complex Multi-Queue'
+        elif row['avg_aht'] > cluster_profiles['avg_aht'].median() * 1.3:
+            name_map[idx] = 'High-Effort Escalation'
+        else:
+            name_map[idx] = 'Standard Escalation'
+
+    seen = {}
+    for idx in sorted(name_map.keys()):
+        base = name_map[idx]
+        if base in seen:
+            name_map[idx] = f"{base} (Group {idx + 1})"
+            if seen[base] == 1:
+                first_idx = [k for k, v in name_map.items() if v == base][0]
+                name_map[first_idx] = f"{base} (Group {first_idx + 1})"
+            seen[base] += 1
+        else:
+            seen[base] = 1
+
+    df['cluster_name'] = df['journey_cluster'].map(name_map)
+
+    artifacts['model3'] = {
+        'model': km, 'scaler': scaler, 'pca': pca, 'pca_coords': pca_coords,
+        'silhouette': best_sil, 'best_k': best_k,
+        'cluster_profiles': cluster_profiles, 'name_map': name_map,
+        'feature_names': list(X_cluster.columns),
+    }
+
+    return df, artifacts
+
+
+case_df, ml_artifacts = build_ml_models(case_df, df_raw)
 
 min_date = case_df['created_at'].min().date()
 max_date = case_df['created_at'].max().date()
@@ -206,7 +392,6 @@ def create_filter_section(tab_id):
             dbc.Col([
                 html.Div([
                     html.Div([
-                        html.Span("📅 ", style={'fontSize': '0.85rem'}),
                         html.Span("DATE RANGE", style={
                             'fontSize': '0.7rem', 'fontWeight': '700',
                             'color': '#444', 'letterSpacing': '0.5px'
@@ -224,12 +409,11 @@ def create_filter_section(tab_id):
                         ),
                     ], className="slicer-body")
                 ], className="slicer-card")
-            ], md=4),
+            ], md=3),
 
             dbc.Col([
                 html.Div([
                     html.Div([
-                        html.Span("🎯 ", style={'fontSize': '0.85rem'}),
                         html.Span("ENTRY QUEUE", style={
                             'fontSize': '0.7rem', 'fontWeight': '700',
                             'color': '#444', 'letterSpacing': '0.5px'
@@ -247,12 +431,11 @@ def create_filter_section(tab_id):
                         ),
                     ], className="slicer-body")
                 ], className="slicer-card")
-            ], md=4),
+            ], md=3),
 
             dbc.Col([
                 html.Div([
                     html.Div([
-                        html.Span("⏰ ", style={'fontSize': '0.85rem'}),
                         html.Span("HOURS TYPE", style={
                             'fontSize': '0.7rem', 'fontWeight': '700',
                             'color': '#444', 'letterSpacing': '0.5px'
@@ -262,8 +445,8 @@ def create_filter_section(tab_id):
                         dcc.Dropdown(
                             id=f'{tab_id}-hours-filter',
                             options=[
-                                {'label': '🌞 In Hours', 'value': 1},
-                                {'label': '🌙 Out of Hours', 'value': 0}
+                                {'label': 'In Hours', 'value': 1},
+                                {'label': 'Out of Hours', 'value': 0}
                             ],
                             value=[0, 1],
                             multi=True,
@@ -272,21 +455,48 @@ def create_filter_section(tab_id):
                         ),
                     ], className="slicer-body")
                 ], className="slicer-card")
-            ], md=4),
+            ], md=3),
+
+            dbc.Col([
+                html.Div([
+                    html.Div([
+                        html.Span("SEGMENT", style={
+                            'fontSize': '0.7rem', 'fontWeight': '700',
+                            'color': '#444', 'letterSpacing': '0.5px'
+                        })
+                    ], className="slicer-header"),
+                    html.Div([
+                        dcc.Dropdown(
+                            id=f'{tab_id}-segment-filter',
+                            options=[
+                                {'label': 'Retail', 'value': 'Retail'},
+                                {'label': 'Claims', 'value': 'Claims'}
+                            ],
+                            value=['Retail', 'Claims'],
+                            multi=True,
+                            placeholder="Select segment...",
+                            style={'fontSize': '0.82rem'}
+                        ),
+                    ], className="slicer-body")
+                ], className="slicer-card")
+            ], md=3),
         ], className="g-3"),
 
     ], className="filter-panel mb-4")
 
 
-def filter_data(case_data, start_date, end_date, queues, hours):
+def filter_data(case_data, start_date, end_date, queues, hours, segments=None):
     if not queues or not hours:
         return pd.DataFrame()
-    return case_data[
+    mask = (
         (case_data.created_at.dt.date >= pd.to_datetime(start_date).date()) &
         (case_data.created_at.dt.date <= pd.to_datetime(end_date).date()) &
         (case_data.entry_queue.isin(queues)) &
         (case_data.inhours.isin(hours))
-    ]
+    )
+    if segments:
+        mask = mask & case_data.segment.isin(segments)
+    return case_data[mask]
 
 
 # ==================================
@@ -333,13 +543,14 @@ app.layout = dbc.Container([
     ], className="mb-3", style={'paddingTop': '0.5rem'}),
 
     dcc.Tabs(id="tabs", value='tab-1', children=[
-        dcc.Tab(label='📋 Overview & Definitions', value='tab-1'),
-        dcc.Tab(label='🔁 Process & Routing',       value='tab-2'),
-        dcc.Tab(label='💼 Cost & Effort Impact',    value='tab-3'),
-        dcc.Tab(label='⏰ Hours & Transfer Effect',  value='tab-4'),
-        dcc.Tab(label='🔬 Queue Intelligence',       value='tab-5'),
-        dcc.Tab(label='🛤️ Journey Pathways',         value='tab-6'),
-        dcc.Tab(label='📥 Data Explorer',            value='tab-7'),
+        dcc.Tab(label='Overview & Definitions', value='tab-1'),
+        dcc.Tab(label='Process & Routing',       value='tab-2'),
+        dcc.Tab(label='Cost & Effort Impact',    value='tab-3'),
+        dcc.Tab(label='Hours & Transfer Effect',  value='tab-4'),
+        dcc.Tab(label='Queue Intelligence',       value='tab-5'),
+        dcc.Tab(label='Journey Pathways',         value='tab-6'),
+        dcc.Tab(label='Data Explorer',            value='tab-7'),
+        dcc.Tab(label='ML Insights',              value='tab-8'),
     ]),
 
     html.Div(id='tabs-content', className="mt-4")
@@ -367,6 +578,8 @@ def render_content(tab):
         return html.Div([create_filter_section('journey'), html.Div(id='journey-content')])
     elif tab == 'tab-7':
         return html.Div([create_filter_section('explorer'), html.Div(id='explorer-content')])
+    elif tab == 'tab-8':
+        return build_ml_insights_tab()
 
 
 # ==================================
@@ -417,12 +630,14 @@ def build_landing_page():
         })
 
     def section_card(icon, title, color, questions, tab_hint):
+        header_children = []
+        if icon:
+            header_children.append(html.Span(icon, style={'fontSize': '1.3rem', 'marginRight': '0.5rem'}))
+        header_children.append(html.Span(title, style={'fontSize': '0.95rem', 'fontWeight': '700',
+                                        'color': '#201F1E', 'verticalAlign': 'middle'}))
         return html.Div([
-            html.Div([
-                html.Span(icon, style={'fontSize': '1.3rem', 'marginRight': '0.5rem'}),
-                html.Span(title, style={'fontSize': '0.95rem', 'fontWeight': '700',
-                                        'color': '#201F1E', 'verticalAlign': 'middle'}),
-            ], style={'marginBottom': '0.7rem', 'display': 'flex', 'alignItems': 'center'}),
+            html.Div(header_children,
+                     style={'marginBottom': '0.7rem', 'display': 'flex', 'alignItems': 'center'}),
             html.Ul([
                 html.Li(q, style={'fontSize': '0.82rem', 'color': '#605E5C',
                                   'marginBottom': '0.25rem'}) for q in questions
@@ -519,7 +734,7 @@ def build_landing_page():
     if alert_data:
         alert_block = html.Div([
             html.Div([
-                html.Strong("Signals Worth Investigating  "),
+                html.Strong("Signals Worth Investigating "),
                 html.Span("Based on the full dataset loaded.",
                           style={'fontSize': '0.8rem', 'color': '#888', 'fontWeight': '400'}),
             ], style={'marginBottom': '0.5rem', 'fontSize': '0.88rem'}),
@@ -539,35 +754,35 @@ def build_landing_page():
         ]),
         dbc.Row([
             dbc.Col([section_card(
-                "🔁", "Process & Routing", '#0078D4',
+                "", "Process & Routing", '#0078D4',
                 ["Which queues cause the most delay?",
                  "What % of time is wasted in transit vs. active resolution?",
                  "Where do loop-backs and re-routing occur?"],
                 "Tab 2 — Queue delay breakdown and routing efficiency"
             )], md=4, className="mb-3"),
             dbc.Col([section_card(
-                "💼", "Cost & Effort Impact", '#00A86B',
+                "", "Cost & Effort Impact", '#00A86B',
                 ["How much does each transfer inflate handle time?",
                  "At what point does transfer cost become unacceptable?",
                  "How does customer messaging scale with routing friction?"],
                 "Tab 3 — AHT inflation curves and effort escalation index"
             )], md=4, className="mb-3"),
             dbc.Col([section_card(
-                "⏰", "Hours & Transfer Effect", '#E81123',
+                "", "Hours & Transfer Effect", '#E81123',
                 ["Do out-of-hours Messenger cases attract more transfers?",
                  "What is the compounding cost of OOH + multiple transfers?",
                  "Which hour × transfer combination drives the highest AHT?"],
                 "Tab 4 — OOH impact and AHT heatmap analysis"
             )], md=4, className="mb-3"),
             dbc.Col([section_card(
-                "🔬", "Queue Intelligence", '#742774',
+                "", "Queue Intelligence", '#742774',
                 ["For a given queue: who sends cases in, and where do they go next?",
                  "Which queues have the worst resolution metrics?",
                  "What does each queue's transfer pattern look like?"],
                 "Tab 5 — Queue deep-dive with inbound and outbound flow"
             )], md=6, className="mb-3"),
             dbc.Col([section_card(
-                "🛤️", "Journey Pathways", '#FFB900',
+                "", "Journey Pathways", '#FFB900',
                 ["What are the most common multi-queue journeys for Messenger cases?",
                  "What % of cases follow each routing path?",
                  "Which paths carry the most volume and the highest cost?"],
@@ -581,13 +796,15 @@ def build_landing_page():
 
     # ── THREE DIMENSIONS ─────────────────────────────────────────────────────
     def dim_pill(icon, color, label, body):
-        return html.Div([
-            html.Div([
-                html.Span(icon, style={'fontSize': '1.2rem', 'marginRight': '0.5rem'}),
-                html.Span(label, style={'fontWeight': '700', 'color': color,
+        pill_header = []
+        if icon:
+            pill_header.append(html.Span(icon, style={'fontSize': '1.2rem', 'marginRight': '0.5rem'}))
+        pill_header.append(html.Span(label, style={'fontWeight': '700', 'color': color,
                                         'fontSize': '0.88rem', 'textTransform': 'uppercase',
-                                        'letterSpacing': '0.5px'}),
-            ], style={'display': 'flex', 'alignItems': 'center', 'marginBottom': '0.5rem'}),
+                                        'letterSpacing': '0.5px'}))
+        return html.Div([
+            html.Div(pill_header,
+                     style={'display': 'flex', 'alignItems': 'center', 'marginBottom': '0.5rem'}),
             html.P(body, style={'fontSize': '0.82rem', 'color': '#605E5C',
                                 'lineHeight': '1.55', 'margin': '0'}),
         ], style={
@@ -606,19 +823,19 @@ def build_landing_page():
         ]),
         dbc.Row([
             dbc.Col([dim_pill(
-                "⏳", "#E81123", "Waiting",
+                "", "#E81123", "Waiting",
                 "Calendar time lost while a Messenger case travels between queues. "
                 "Customers experience this as slow resolution. Measured as Routing Days — "
                 "days the case spent in transit before reaching the queue that resolved it."
             )], md=4, className="mb-3"),
             dbc.Col([dim_pill(
-                "💼", "#0078D4", "Working",
+                "", "#0078D4", "Working",
                 "Productive agent time spent on the case. Each transfer inflates this because "
                 "a new advisor must re-read the conversation, re-engage the customer, and "
                 "re-process what was already done. Measured as AHT (minutes)."
             )], md=4, className="mb-3"),
             dbc.Col([dim_pill(
-                "💬", "#742774", "Friction",
+                "", "#742774", "Friction",
                 "Customer effort generated by poor routing. When Messenger cases bounce between "
                 "queues, customers send more messages, ask the same questions again, and are "
                 "more likely to escalate. Measured as customer message count."
@@ -640,34 +857,34 @@ def build_landing_page():
         ]),
         dbc.Row([
             dbc.Col([
-                def_item('#E81123', '🔄 Transfer',
+                def_item('#E81123', 'Transfer',
                          'A Messenger case moving from one queue or team to another before resolution. '
                          'Each transfer is a handoff — the new advisor starts from scratch.'),
-                def_item('#00BCF2', '✅ Direct Resolution Rate (DRR)',
+                def_item('#00BCF2', 'Direct Resolution Rate (DRR)',
                          'The % of Messenger cases resolved without any transfer — handled entirely '
                          'in the first queue they entered. Also called First-Touch Resolution (FTR). '
                          'Definition: cases where number of transfers = 0.'),
-                def_item('#FFB900', '⏳ Routing Days',
+                def_item('#FFB900', 'Routing Days',
                          'Calendar time a case spends moving between queues before it reaches the '
                          'queue that resolves it. Pure delay — no value added. The "waiting" cost.'),
-                def_item('#0078D4', '📊 AHT (Average Handle Time)',
+                def_item('#0078D4', 'AHT (Average Handle Time)',
                          'Total active agent time spent on a Messenger case, in minutes. '
                          'Inflates with each transfer as new advisors re-read and re-process.'),
             ], md=6),
             dbc.Col([
-                def_item('#742774', '💬 Customer Messages',
+                def_item('#742774', 'Customer Messages',
                          'The number of messages a customer sends on the Messenger case. '
                          'Higher transfer counts drive more customer messages — customers chase '
                          'updates, repeat their issue, and push back when routing fails them.'),
-                def_item('#00A86B', '🌙 Out-of-Hours (OOH)',
+                def_item('#00A86B', 'Out-of-Hours (OOH)',
                          'Messenger cases created outside standard business hours. OOH cases sit '
                          'in queues until teams come online, compounding both waiting time and '
                          'the likelihood of additional transfers.'),
-                def_item('#E81123', '🔁 Loop / Re-queue',
+                def_item('#E81123', 'Loop / Re-queue',
                          'When a Messenger case is routed back to a queue it has already visited. '
                          'Signals unclear ownership or skill mismatches in routing rules. '
                          'Every loop adds at least one transfer and one round of re-reading.'),
-                def_item('#0078D4', '🛤️ Journey / Pathway',
+                def_item('#0078D4', 'Journey / Pathway',
                          'The ordered sequence of queues a Messenger case passes through. '
                          'E.g. General Enquiry → Technical Support → Escalations. '
                          'The report maps the most frequent paths to surface routing patterns.'),
@@ -694,10 +911,11 @@ def build_landing_page():
 @callback(
     Output('process-content', 'children'),
     [Input('process-date-filter', 'start_date'), Input('process-date-filter', 'end_date'),
-     Input('process-queue-filter', 'value'),    Input('process-hours-filter', 'value')]
+     Input('process-queue-filter', 'value'),    Input('process-hours-filter', 'value'),
+     Input('process-segment-filter', 'value')]
 )
-def update_process_tab(start_date, end_date, queues, hours):
-    filtered = filter_data(case_df, start_date, end_date, queues, hours)
+def update_process_tab(start_date, end_date, queues, hours, segments):
+    filtered = filter_data(case_df, start_date, end_date, queues, hours, segments)
     if len(filtered) == 0:
         return html.Div("No data available", className="alert alert-warning")
 
@@ -759,16 +977,16 @@ def update_process_tab(start_date, end_date, queues, hours):
     multi_xfer_val   = (filtered.transfers >= 2).mean() * 100
 
     kpi_row = dbc.Row([
-        dbc.Col([html.Div([html.H4("✅ Direct Resolution Rate"),
+        dbc.Col([html.Div([html.H4("Direct Resolution Rate"),
                            html.H2(f"{ftr_rate_val:.1f}%")],
                           className="kpi-card kpi-success animated-card")], md=3),
-        dbc.Col([html.Div([html.H4("🔁 Loop / Rework Rate"),
+        dbc.Col([html.Div([html.H4("Loop / Rework Rate"),
                            html.H2(f"{loop_rate_val:.1f}%")],
                           className="kpi-card kpi-danger animated-card")], md=3),
-        dbc.Col([html.Div([html.H4("📋 Cases with Rework"),
+        dbc.Col([html.Div([html.H4("Cases with Rework"),
                            html.H2(f"{rework_cases_val:,}")],
                           className="kpi-card kpi-warning animated-card")], md=3),
-        dbc.Col([html.Div([html.H4("⚡ Multi-Transfer Cases (2+)"),
+        dbc.Col([html.Div([html.H4("Multi-Transfer Cases (2+)"),
                            html.H2(f"{multi_xfer_val:.1f}%")],
                           className="kpi-card kpi-info animated-card")], md=3),
     ], className="mb-4")
@@ -790,10 +1008,11 @@ def update_process_tab(start_date, end_date, queues, hours):
 @callback(
     Output('impact-content', 'children'),
     [Input('impact-date-filter', 'start_date'), Input('impact-date-filter', 'end_date'),
-     Input('impact-queue-filter', 'value'),    Input('impact-hours-filter', 'value')]
+     Input('impact-queue-filter', 'value'),    Input('impact-hours-filter', 'value'),
+     Input('impact-segment-filter', 'value')]
 )
-def update_impact_tab(start_date, end_date, queues, hours):
-    filtered = filter_data(case_df, start_date, end_date, queues, hours)
+def update_impact_tab(start_date, end_date, queues, hours, segments):
+    filtered = filter_data(case_df, start_date, end_date, queues, hours, segments)
     if len(filtered) == 0:
         return html.Div("No data available", className="alert alert-warning")
 
@@ -826,58 +1045,69 @@ def update_impact_tab(start_date, end_date, queues, hours):
         '3+': POWERBI_COLORS['danger']
     }
 
-    # Violin — AHT (capped at P95)
+    # Strip + Box — AHT (capped at P95, no outlier markers)
     aht_fig = go.Figure()
     for tbin in ['0', '1', '2', '3+']:
         data = filtered[filtered.transfer_bin == tbin]['total_active_aht']
         capped = data[data <= p95_aht].dropna()
+        label = f"{tbin} transfer{'s' if tbin != '1' else ''}"
         if len(capped) > 0:
-            aht_fig.add_trace(go.Violin(
+            # Jittered strip points
+            aht_fig.add_trace(go.Box(
                 y=capped,
-                name=f"{tbin} transfer{'s' if tbin != '1' else ''}",
-                box_visible=True,
-                meanline_visible=True,
-                line_color=bin_colors[tbin],
-                fillcolor=bin_colors[tbin],
-                opacity=0.6,
-                points=False
+                name=label,
+                marker=dict(color=bin_colors[tbin], size=5, opacity=0.45),
+                line=dict(color=bin_colors[tbin], width=1.5),
+                fillcolor='rgba(0,0,0,0)',
+                boxpoints='all',
+                jitter=0.4,
+                pointpos=0,
+                boxmean='sd',
+                whiskerwidth=0.6,
+                opacity=0.9,
             ))
     aht_fig.update_layout(
-        title=dict(text="Handle Time Distribution by Transfer Count (capped P95)",
+        title=dict(text="Handle Time Distribution by Transfer Count",
                    font=dict(size=13, color='#201F1E', family='Segoe UI')),
         yaxis_title="Active Handle Time (min)",
         width=540, height=460, autosize=False,
         paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
         font=dict(family='Segoe UI', color='#201F1E'),
-        yaxis=dict(showgrid=True, gridcolor='#EDEBE9'),
+        yaxis=dict(showgrid=True, gridcolor='#EDEBE9', zeroline=False),
+        xaxis=dict(showgrid=False),
         showlegend=False,
         margin=dict(l=50, r=20, t=60, b=40)
     )
 
-    # Violin — Messages (capped at P95)
+    # Strip + Box — Messages (capped at P95, no outlier markers)
     msg_fig = go.Figure()
     for tbin in ['0', '1', '2', '3+']:
         data = filtered[filtered.transfer_bin == tbin]['messages']
         capped = data[data <= p95_msg].dropna()
+        label = f"{tbin} transfer{'s' if tbin != '1' else ''}"
         if len(capped) > 0:
-            msg_fig.add_trace(go.Violin(
+            msg_fig.add_trace(go.Box(
                 y=capped,
-                name=f"{tbin} transfer{'s' if tbin != '1' else ''}",
-                box_visible=True,
-                meanline_visible=True,
-                line_color=bin_colors[tbin],
-                fillcolor=bin_colors[tbin],
-                opacity=0.6,
-                points=False
+                name=label,
+                marker=dict(color=bin_colors[tbin], size=5, opacity=0.45),
+                line=dict(color=bin_colors[tbin], width=1.5),
+                fillcolor='rgba(0,0,0,0)',
+                boxpoints='all',
+                jitter=0.4,
+                pointpos=0,
+                boxmean='sd',
+                whiskerwidth=0.6,
+                opacity=0.9,
             ))
     msg_fig.update_layout(
-        title=dict(text="Customer Messages by Transfer Count (capped P95)",
+        title=dict(text="Customer Messages by Transfer Count",
                    font=dict(size=13, color='#201F1E', family='Segoe UI')),
         yaxis_title="Messages from Customer",
         width=540, height=460, autosize=False,
         paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
         font=dict(family='Segoe UI', color='#201F1E'),
-        yaxis=dict(showgrid=True, gridcolor='#EDEBE9'),
+        yaxis=dict(showgrid=True, gridcolor='#EDEBE9', zeroline=False),
+        xaxis=dict(showgrid=False),
         showlegend=False,
         margin=dict(l=50, r=20, t=60, b=40)
     )
@@ -901,45 +1131,49 @@ def update_impact_tab(start_date, end_date, queues, hours):
     esc_fig = go.Figure()
     esc_fig.add_trace(go.Bar(
         x=esc['transfer_bin'], y=esc['aht_idx'], name='Handle Time (indexed)',
-        marker_color=POWERBI_COLORS['primary'], opacity=0.85,
+        marker=dict(color=POWERBI_COLORS['primary'], line=dict(width=0)),
         text=esc['aht_idx'].round(0), textposition='outside',
-        texttemplate='%{text:.0f}',
+        texttemplate='%{text:.0f}', textfont=dict(size=13, color=POWERBI_COLORS['primary']),
     ))
     esc_fig.add_trace(go.Bar(
         x=esc['transfer_bin'], y=esc['msg_idx'], name='Customer Messages (indexed)',
-        marker_color=POWERBI_COLORS['warning'], opacity=0.85,
+        marker=dict(color=POWERBI_COLORS['warning'], line=dict(width=0)),
         text=esc['msg_idx'].round(0), textposition='outside',
-        texttemplate='%{text:.0f}',
+        texttemplate='%{text:.0f}', textfont=dict(size=13, color=POWERBI_COLORS['warning']),
     ))
-    esc_fig.add_hline(y=100, line_dash="dash", line_color="#888",
-                      annotation_text="  Baseline — 0 transfers (= 100)",
-                      annotation_font_size=11)
+    esc_fig.add_hline(y=100, line_dash="dash", line_color="#999", line_width=1.5,
+                      annotation_text="Baseline (0 transfers = 100)",
+                      annotation_font=dict(size=11, color='#666'))
     esc_fig.update_layout(
-        title=dict(text="Dual Escalation: Handle Time & Customer Messages Indexed to First-Touch (= 100)",
+        title=dict(text="Escalation Index: Handle Time & Messages vs First-Touch Baseline",
                    font=dict(size=13, color='#201F1E', family='Segoe UI')),
         xaxis_title="Number of Transfers",
         yaxis_title="Index (0 transfers = 100)",
         barmode='group',
+        bargap=0.25, bargroupgap=0.08,
         width=1100, height=400, autosize=False,
         paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
         font=dict(family='Segoe UI', color='#201F1E'),
-        yaxis=dict(showgrid=True, gridcolor='#EDEBE9'),
+        yaxis=dict(showgrid=True, gridcolor='#EDEBE9', zeroline=False),
+        xaxis=dict(showgrid=False),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1,
+                    font=dict(size=11)),
         margin=dict(l=60, r=20, t=70, b=50)
     )
 
     insight = html.Div([
         html.P([
-            "💡 ",
+            "",
             html.Strong(f"Every additional transfer inflates handle time by ~{aht_pct/3:.0f}% per step "),
             f"and customer messages by ~{msg_pct/3:.0f}% per step. Cases reaching 3+ transfers carry ",
-            html.Strong(f"{aht_pct:.0f}% more AHT"), f" and ",
+            html.Strong(f"{aht_pct:.0f}% more AHT"), f"and ",
             html.Strong(f"{msg_pct:.0f}% more customer messages"),
-            " than first-touch resolutions."
+            "than first-touch resolutions."
         ], style={'margin': 0, 'fontSize': '0.92rem', 'color': '#333'})
     ], className="insight-card mb-3")
 
     return html.Div([
-        html.H5("💼 Cost & Effort Impact",
+        html.H5("Cost & Effort Impact",
                 style={'fontWeight': '700', 'color': '#201F1E', 'marginBottom': '0.3rem'}),
         html.P("Every transfer inflates both agent handle time AND customer effort — a dual cost to the business.",
                className="text-muted mb-3"),
@@ -962,10 +1196,11 @@ def update_impact_tab(start_date, end_date, queues, hours):
 @callback(
     Output('hours-content', 'children'),
     [Input('hours-date-filter', 'start_date'), Input('hours-date-filter', 'end_date'),
-     Input('hours-queue-filter', 'value'),    Input('hours-hours-filter', 'value')]
+     Input('hours-queue-filter', 'value'),    Input('hours-hours-filter', 'value'),
+     Input('hours-segment-filter', 'value')]
 )
-def update_hours_tab(start_date, end_date, queues, hours):
-    filtered = filter_data(case_df, start_date, end_date, queues, hours)
+def update_hours_tab(start_date, end_date, queues, hours, segments):
+    filtered = filter_data(case_df, start_date, end_date, queues, hours, segments)
     if len(filtered) == 0:
         return html.Div("No data available", className="alert alert-warning")
 
@@ -984,11 +1219,11 @@ def update_hours_tab(start_date, end_date, queues, hours):
 
     insight = html.Div([
         html.P([
-            "💡 Out-of-hours cases have ",
+            "Out-of-hours cases have ",
             html.Strong(f"{ooh_multi:.0f}% multi-transfer rate vs {ih_multi:.0f}% in-hours", style={'color': POWERBI_COLORS['danger']}),
-            " — AND each transfer takes ",
+            "— AND each transfer takes ",
             html.Strong(f"{ooh_aht_penalty:+.0f}% longer to handle.", style={'color': POWERBI_COLORS['danger']}),
-            " The OOH penalty compounds with each successive transfer."
+            "The OOH penalty compounds with each successive transfer."
         ], style={'margin': 0, 'fontSize': '0.92rem', 'color': '#333'})
     ], className="insight-card mb-4")
 
@@ -1019,57 +1254,76 @@ def update_hours_tab(start_date, end_date, queues, hours):
         margin=dict(l=50, r=20, t=60, b=40)
     )
 
-    # Heatmap: Median AHT by (transfer × hours)
-    aht_mat = (filtered.groupby(['transfer_bin', 'inhours'])['total_active_aht']
-               .median().reset_index())
-    aht_mat['hours_label'] = aht_mat['inhours'].map({1: 'In Hours', 0: 'Out of Hours'})
-    aht_pivot = aht_mat.pivot(index='hours_label', columns='transfer_bin', values='total_active_aht')
+    # Helper: build annotated heatmap with smart per-cell text colors
+    def _build_heatmap(pivot, title, colorscale, fmt, unit, cb_title):
+        vals = pivot.values
+        x_labels = pivot.columns.tolist()
+        y_labels = pivot.index.tolist()
+        vmin, vmax = vals.min(), vals.max()
+        mid = (vmin + vmax) / 2 if vals.size > 0 else 0
 
-    aht_heat = go.Figure(data=go.Heatmap(
-        z=aht_pivot.values,
-        x=aht_pivot.columns.tolist(),
-        y=aht_pivot.index.tolist(),
-        colorscale=[[0, POWERBI_COLORS['success']], [0.5, '#FFFFCC'], [1, POWERBI_COLORS['danger']]],
-        text=aht_pivot.values.round(0),
-        texttemplate='%{text:.0f} min',
-        textfont={"size": 14, "family": "Segoe UI", "color": "#201F1E"},
-        colorbar=dict(title="AHT (min)")
-    ))
-    aht_heat.update_layout(
-        title=dict(text="Median AHT: The Compounding Effect of Hours × Transfers",
-                   font=dict(size=13, color='#201F1E', family='Segoe UI')),
-        xaxis_title="Transfers",
-        width=540, height=240, autosize=False,
-        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-        font=dict(family='Segoe UI'),
-        margin=dict(l=110, r=20, t=55, b=40)
-    )
+        fig = go.Figure(data=go.Heatmap(
+            z=vals, x=x_labels, y=y_labels,
+            colorscale=colorscale, showscale=True,
+            colorbar=dict(title=dict(text=cb_title, font=dict(size=11)),
+                          thickness=12, len=0.9, outlinewidth=0),
+            xgap=3, ygap=3,
+            hovertemplate=f'Transfers: %{{x}}<br>Hours: %{{y}}<br>{unit}: %{{z:{fmt}}}<extra></extra>'
+        ))
+        # Add annotations for per-cell text with smart color
+        annotations = []
+        for i, y_label in enumerate(y_labels):
+            for j, x_label in enumerate(x_labels):
+                v = vals[i][j]
+                font_color = 'white' if v > mid else '#201F1E'
+                annotations.append(dict(
+                    x=x_label, y=y_label,
+                    text=f"{v:{fmt}} {unit.lower()}",
+                    font=dict(size=15, family='Segoe UI Semibold', color=font_color),
+                    showarrow=False, xref='x', yref='y'
+                ))
+        fig.update_layout(
+            title=dict(text=title, font=dict(size=13, color='#201F1E', family='Segoe UI')),
+            xaxis=dict(title="Number of Transfers", side='bottom', tickfont=dict(size=12)),
+            yaxis=dict(tickfont=dict(size=12)),
+            width=540, height=280, autosize=False,
+            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+            font=dict(family='Segoe UI'),
+            margin=dict(l=110, r=60, t=55, b=45),
+            annotations=annotations
+        )
+        return fig
 
-    # Heatmap: Routing days
-    days_mat = (filtered.groupby(['transfer_bin', 'inhours'])['routing_days']
-                .median().reset_index())
-    days_mat['hours_label'] = days_mat['inhours'].map({1: 'In Hours', 0: 'Out of Hours'})
-    days_pivot = days_mat.pivot(index='hours_label', columns='transfer_bin', values='routing_days')
+    def _prepare_pivot(filtered_df, value_col, agg='median'):
+        mat = (filtered_df.groupby(['transfer_bin', 'inhours'])[value_col]
+               .agg(agg).reset_index())
+        mat['hours_label'] = mat['inhours'].map({1: 'In Hours', 0: 'Out of Hours'})
+        pivot = mat.pivot(index='hours_label', columns='transfer_bin', values=value_col)
+        for label in ['Out of Hours', 'In Hours']:
+            if label not in pivot.index:
+                pivot.loc[label] = 0
+        return pivot.loc[['Out of Hours', 'In Hours']]
 
-    days_heat = go.Figure(data=go.Heatmap(
-        z=days_pivot.values,
-        x=days_pivot.columns.tolist(),
-        y=days_pivot.index.tolist(),
-        colorscale=[[0, POWERBI_COLORS['success']], [0.5, '#FFFFCC'], [1, POWERBI_COLORS['danger']]],
-        text=days_pivot.values.round(1),
-        texttemplate='%{text:.1f}d',
-        textfont={"size": 14, "family": "Segoe UI", "color": "#201F1E"},
-        colorbar=dict(title="Routing Days")
-    ))
-    days_heat.update_layout(
-        title=dict(text="Median Routing Wait Days: Hours × Transfers",
-                   font=dict(size=13, color='#201F1E', family='Segoe UI')),
-        xaxis_title="Transfers",
-        width=540, height=240, autosize=False,
-        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-        font=dict(family='Segoe UI'),
-        margin=dict(l=110, r=20, t=55, b=40)
-    )
+    # --- Heatmap 1: Median AHT ---
+    aht_pivot = _prepare_pivot(filtered, 'total_active_aht')
+    aht_heat = _build_heatmap(
+        aht_pivot, "Median Handle Time — Hours x Transfers",
+        [[0, '#E6F4EA'], [0.3, '#A8DAB5'], [0.55, '#FDD835'], [0.8, '#EF6C00'], [1, '#C62828']],
+        '.0f', 'min', 'AHT (min)')
+
+    # --- Heatmap 2: Routing days ---
+    days_pivot = _prepare_pivot(filtered, 'routing_days')
+    days_heat = _build_heatmap(
+        days_pivot, "Median Routing Wait — Hours x Transfers",
+        [[0, '#E3F2FD'], [0.3, '#90CAF9'], [0.55, '#FDD835'], [0.8, '#EF6C00'], [1, '#C62828']],
+        '.1f', 'days', 'Days')
+
+    # --- Heatmap 3: Customer messages ---
+    msg_pivot = _prepare_pivot(filtered, 'messages')
+    msg_heat = _build_heatmap(
+        msg_pivot, "Median Customer Messages — Hours x Transfers",
+        [[0, '#F3E5F5'], [0.3, '#CE93D8'], [0.55, '#FDD835'], [0.8, '#EF6C00'], [1, '#C62828']],
+        '.0f', 'msgs', 'Messages')
 
     summary_cards = dbc.Row([
         dbc.Col([html.Div([html.H4("Multi-Transfer Rate (IH)"),  html.H2(f"{ih_multi:.0f}%")],
@@ -1083,7 +1337,7 @@ def update_hours_tab(start_date, end_date, queues, hours):
     ], className="mb-4")
 
     return html.Div([
-        html.H5("⏰ Hours & Transfer Effect",
+        html.H5("Hours & Transfer Effect",
                 style={'fontWeight': '700', 'color': '#201F1E', 'marginBottom': '0.3rem'}),
         html.P("Out-of-hours cases accumulate more transfers AND each transfer hits harder — a compounding problem.",
                className="text-muted mb-3"),
@@ -1092,11 +1346,16 @@ def update_hours_tab(start_date, end_date, queues, hours):
         html.Hr(className="divider"),
         dbc.Row([
             dbc.Col([dcc.Graph(figure=dist_fig, config={'responsive': False})], md=6),
-            dbc.Col([
-                dcc.Graph(figure=aht_heat,  config={'responsive': False}),
-                dcc.Graph(figure=days_heat, config={'responsive': False}),
-            ], md=6),
-        ])
+            dbc.Col([dcc.Graph(figure=aht_heat, config={'responsive': False})], md=6),
+        ], className="mb-2"),
+        html.Hr(className="divider"),
+        html.H6("Compounding Effect Matrix", style={'fontWeight': '600', 'color': '#201F1E', 'marginBottom': '0.5rem'}),
+        html.P("Each heatmap shows how the penalty compounds when out-of-hours cases hit multiple transfers.",
+               className="text-muted mb-3", style={'fontSize': '0.88rem'}),
+        dbc.Row([
+            dbc.Col([dcc.Graph(figure=days_heat, config={'responsive': False})], md=6),
+            dbc.Col([dcc.Graph(figure=msg_heat, config={'responsive': False})], md=6),
+        ], className="mb-2"),
     ])
 
 
@@ -1107,23 +1366,24 @@ def update_hours_tab(start_date, end_date, queues, hours):
 @callback(
     Output('qi-content', 'children'),
     [Input('qi-date-filter', 'start_date'), Input('qi-date-filter', 'end_date'),
-     Input('qi-queue-filter', 'value'),    Input('qi-hours-filter', 'value')]
+     Input('qi-queue-filter', 'value'),    Input('qi-hours-filter', 'value'),
+     Input('qi-segment-filter', 'value')]
 )
-def update_qi_tab(start_date, end_date, queues, hours):
-    filtered = filter_data(case_df, start_date, end_date, queues, hours)
+def update_qi_tab(start_date, end_date, queues, hours, segments):
+    filtered = filter_data(case_df, start_date, end_date, queues, hours, segments)
     if len(filtered) == 0:
         return html.Div("No data available", className="alert alert-warning")
 
     all_queues = sorted(df_raw.QUEUE_NEW.dropna().unique())
     return html.Div([
-        html.H5("🔬 Queue Intelligence",
+        html.H5("Queue Intelligence",
                 style={'fontWeight': '700', 'color': '#201F1E', 'marginBottom': '0.3rem'}),
         html.P("Select any queue to see its dwell time, transfer flows, and contribution to routing waste.",
                className="text-muted mb-3"),
         dbc.Row([
             dbc.Col([
                 html.Div([
-                    html.Div([html.Span("🔍 "), html.Span("SELECT QUEUE", style={
+                    html.Div([html.Span("SELECT QUEUE", style={
                         'fontSize': '0.7rem', 'fontWeight': '700', 'color': '#444', 'letterSpacing': '0.5px'
                     })], className="slicer-header"),
                     html.Div([
@@ -1145,13 +1405,14 @@ def update_qi_tab(start_date, end_date, queues, hours):
     Output('qi-analysis', 'children'),
     [Input('qi-queue-selector', 'value'),
      Input('qi-date-filter', 'start_date'),  Input('qi-date-filter', 'end_date'),
-     Input('qi-queue-filter', 'value'),       Input('qi-hours-filter', 'value')]
+     Input('qi-queue-filter', 'value'),       Input('qi-hours-filter', 'value'),
+     Input('qi-segment-filter', 'value')]
 )
-def update_qi_analysis(selected_queue, start_date, end_date, queues, hours):
+def update_qi_analysis(selected_queue, start_date, end_date, queues, hours, segments):
     if not selected_queue:
         return html.Div()
 
-    filtered = filter_data(case_df, start_date, end_date, queues, hours)
+    filtered = filter_data(case_df, start_date, end_date, queues, hours, segments)
     filtered_cases = filtered.CASE_ID.unique()
     df_f = df_raw[df_raw.CASE_ID.isin(filtered_cases)]
     subset = df_f[df_f.QUEUE_NEW == selected_queue]
@@ -1189,9 +1450,9 @@ def update_qi_analysis(selected_queue, start_date, end_date, queues, hours):
         color_discrete_sequence=[POWERBI_COLORS['primary']]
     )
     hist_fig.add_vline(x=med_dwell, line_dash="dash", line_color=POWERBI_COLORS['danger'],
-                       annotation_text=f"  Median: {med_dwell:.1f}d", annotation_font_size=11)
+                       annotation_text=f"Median: {med_dwell:.1f}d", annotation_font_size=11)
     hist_fig.add_vline(x=p90_dwell, line_dash="dot", line_color=POWERBI_COLORS['warning'],
-                       annotation_text=f"  P90: {p90_dwell:.1f}d", annotation_font_size=11)
+                       annotation_text=f"P90: {p90_dwell:.1f}d", annotation_font_size=11)
     hist_fig.update_layout(
         width=1100, height=320, autosize=False,
         paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
@@ -1234,14 +1495,14 @@ def update_qi_analysis(selected_queue, start_date, end_date, queues, hours):
         fig.update_yaxes(autorange="reversed")
         return fig
 
-    in_fig  = flow_chart(inbound,  f"📥 Top Sources Feeding {selected_queue}",       POWERBI_COLORS['secondary'])
-    out_fig = flow_chart(outbound, f"📤 Top Destinations After {selected_queue}",     POWERBI_COLORS['primary'])
+    in_fig  = flow_chart(inbound,  f"Top Sources Feeding {selected_queue}",       POWERBI_COLORS['secondary'])
+    out_fig = flow_chart(outbound, f"Top Destinations After {selected_queue}",     POWERBI_COLORS['primary'])
 
     # Top transfer paths (full)
     all_paths = []
     for cid in df_f[df_f.QUEUE_NEW == selected_queue].CASE_ID.unique():
         j = df_f[df_f.CASE_ID == cid].sort_values('QUEUE_ORDER').QUEUE_NEW.tolist()
-        all_paths.append(' → '.join(j))
+        all_paths.append('→ '.join(j))
 
     path_counts = pd.Series(all_paths).value_counts().head(10).reset_index()
     path_counts.columns = ['Journey Path', 'Cases']
@@ -1277,16 +1538,17 @@ def update_qi_analysis(selected_queue, start_date, end_date, queues, hours):
 @callback(
     Output('journey-content', 'children'),
     [Input('journey-date-filter', 'start_date'), Input('journey-date-filter', 'end_date'),
-     Input('journey-queue-filter', 'value'),    Input('journey-hours-filter', 'value')]
+     Input('journey-queue-filter', 'value'),    Input('journey-hours-filter', 'value'),
+     Input('journey-segment-filter', 'value')]
 )
-def update_journey_tab(start_date, end_date, queues, hours):
-    filtered = filter_data(case_df, start_date, end_date, queues, hours)
+def update_journey_tab(start_date, end_date, queues, hours, segments):
+    filtered = filter_data(case_df, start_date, end_date, queues, hours, segments)
     if len(filtered) == 0:
         return html.Div("No data available", className="alert alert-warning")
 
     all_queues = sorted(df_raw.QUEUE_NEW.dropna().unique())
     return html.Div([
-        html.H5("🛤️ Customer Journey Pathways",
+        html.H5("Customer Journey Pathways",
                 style={'fontWeight': '700', 'color': '#201F1E', 'marginBottom': '0.3rem'}),
         html.P("Visualise how customers flow through queues — forward paths (where they go) and backward paths (how they arrived).",
                className="text-muted mb-3"),
@@ -1294,7 +1556,7 @@ def update_journey_tab(start_date, end_date, queues, hours):
         dbc.Row([
             dbc.Col([
                 html.Div([
-                    html.Div([html.Span("🔍 "), html.Span("SELECT QUEUE TO ANALYSE", style={
+                    html.Div([html.Span("SELECT QUEUE TO ANALYSE", style={
                         'fontSize': '0.7rem', 'fontWeight': '700', 'color': '#444', 'letterSpacing': '0.5px'
                     })], className="slicer-header"),
                     html.Div([
@@ -1310,7 +1572,7 @@ def update_journey_tab(start_date, end_date, queues, hours):
             ], md=5),
             dbc.Col([
                 html.Div([
-                    html.Div([html.Span("🔢 "), html.Span("JOURNEY DEPTH (LEVELS)", style={
+                    html.Div([html.Span("JOURNEY DEPTH (LEVELS)", style={
                         'fontSize': '0.7rem', 'fontWeight': '700', 'color': '#444', 'letterSpacing': '0.5px'
                     })], className="slicer-header"),
                     html.Div([
@@ -1334,13 +1596,14 @@ def update_journey_tab(start_date, end_date, queues, hours):
     [Input('journey-queue-selector', 'value'),
      Input('journey-depth-slider', 'value'),
      Input('journey-date-filter', 'start_date'), Input('journey-date-filter', 'end_date'),
-     Input('journey-queue-filter', 'value'),    Input('journey-hours-filter', 'value')]
+     Input('journey-queue-filter', 'value'),    Input('journey-hours-filter', 'value'),
+     Input('journey-segment-filter', 'value')]
 )
-def update_journey_analysis(selected_queue, depth, start_date, end_date, queues, hours):
+def update_journey_analysis(selected_queue, depth, start_date, end_date, queues, hours, segments):
     if not selected_queue:
         return html.Div()
 
-    filtered = filter_data(case_df, start_date, end_date, queues, hours)
+    filtered = filter_data(case_df, start_date, end_date, queues, hours, segments)
     filtered_cases = filtered.CASE_ID.unique()
     df_f = df_raw[df_raw.CASE_ID.isin(filtered_cases)]
 
@@ -1371,7 +1634,7 @@ def update_journey_analysis(selected_queue, depth, start_date, end_date, queues,
     complete_paths = []
     for cid in q_cases:
         j = df_f[df_f.CASE_ID == cid].sort_values('QUEUE_ORDER').QUEUE_NEW.tolist()
-        complete_paths.append(' → '.join(j))
+        complete_paths.append('→ '.join(j))
 
     total_through = len(complete_paths)
     path_counts = pd.Series(complete_paths).value_counts().head(10).reset_index()
@@ -1393,7 +1656,7 @@ def update_journey_analysis(selected_queue, depth, start_date, end_date, queues,
 
     path_note = html.Div([
         html.P([
-            "💡 ",
+            "",
             html.Strong("How to read this table: "),
             f"Percentages show each path's share of all {total_through:,} cases that touched ",
             html.Strong(selected_queue),
@@ -1413,21 +1676,21 @@ def update_journey_analysis(selected_queue, depth, start_date, end_date, queues,
         stats_cards,
         html.Hr(className="divider"),
 
-        html.H6(f"📤 Forward View: Where do customers go FROM {selected_queue}?",
+        html.H6(f"Forward View: Where do customers go FROM {selected_queue}?",
                 style={'fontWeight': '600', 'color': '#201F1E'}),
         html.P("Paths customers take AFTER entering this queue.", className="text-muted"),
         dcc.Graph(figure=forward_sankey, config={'responsive': False}),
 
         html.Hr(className="divider"),
 
-        html.H6(f"📥 Backward View: How do customers arrive TO {selected_queue}?",
+        html.H6(f"Backward View: How do customers arrive TO {selected_queue}?",
                 style={'fontWeight': '600', 'color': '#201F1E'}),
         html.P("Paths customers took BEFORE reaching this queue.", className="text-muted"),
         dcc.Graph(figure=backward_sankey, config={'responsive': False}),
 
         html.Hr(className="divider"),
 
-        html.H6(f"🛤️ Top 10 Complete Journey Paths Through {selected_queue}",
+        html.H6(f"Top 10 Complete Journey Paths Through {selected_queue}",
                 style={'fontWeight': '600', 'color': '#201F1E'}),
         path_note,
         path_table
@@ -1516,22 +1779,35 @@ DT_STYLE_CONDITIONAL = [
 def build_view_df(view, filtered, df_raw_filtered):
     """Return (dataframe, filename) for a given view type."""
     if view == 'case':
-        df = filtered[[
+        all_cols = [
             'CASE_ID', 'entry_queue', 'final_queue', 'transfers', 'transfer_bin',
             'total_active_aht', 'routing_days', 'close_hours', 'messages',
             'ftr', 'inhours', 'loop_flag',
-        ]].copy()
-        df.columns = [
-            'Case ID', 'Entry Queue', 'Final Queue', 'Transfers', 'Transfer Group',
-            'AHT (min)', 'Routing Days', 'Close Hours', 'Cust. Messages',
-            'Direct Resolved', 'In-Hours', 'Has Loop',
+            'segment',
+            'transfer_risk', 'recommended_queue', 'queue_match', 'cluster_name',
         ]
+        cols = [c for c in all_cols if c in filtered.columns]
+        df = filtered[cols].copy()
+        rename_map = {
+            'CASE_ID': 'Case ID', 'entry_queue': 'Entry Queue',
+            'final_queue': 'Final Queue', 'transfers': 'Transfers',
+            'transfer_bin': 'Transfer Group', 'total_active_aht': 'AHT (min)',
+            'routing_days': 'Routing Days', 'close_hours': 'Close Hours',
+            'messages': 'Cust. Messages', 'ftr': 'Direct Resolved',
+            'inhours': 'In-Hours', 'loop_flag': 'Has Loop',
+            'segment': 'Segment',
+            'transfer_risk': 'Transfer Risk %', 'recommended_queue': 'Recommended Queue',
+            'queue_match': 'Queue Match', 'cluster_name': 'Journey Cluster',
+        }
+        df.columns = [rename_map.get(c, c) for c in df.columns]
         df['Direct Resolved'] = df['Direct Resolved'].map({1: 'Yes', 0: 'No'})
         df['In-Hours']        = df['In-Hours'].map({1: 'Yes', 0: 'No'})
         df['Has Loop']        = df['Has Loop'].map({1: 'Yes', 0: 'No'})
         df['AHT (min)']       = df['AHT (min)'].round(1)
         df['Routing Days']    = df['Routing Days'].round(2)
         df['Close Hours']     = df['Close Hours'].round(1)
+        if 'Queue Match' in df.columns:
+            df['Queue Match'] = df['Queue Match'].map({1: 'Yes', 0: 'No'})
         return df, 'messenger_case_summary.csv'
 
     elif view == 'journey':
@@ -1587,10 +1863,11 @@ def build_view_df(view, filtered, df_raw_filtered):
 @callback(
     Output('explorer-content', 'children'),
     [Input('explorer-date-filter', 'start_date'), Input('explorer-date-filter', 'end_date'),
-     Input('explorer-queue-filter', 'value'),    Input('explorer-hours-filter', 'value')]
+     Input('explorer-queue-filter', 'value'),    Input('explorer-hours-filter', 'value'),
+     Input('explorer-segment-filter', 'value')]
 )
-def update_explorer_tab(start_date, end_date, queues, hours):
-    filtered = filter_data(case_df, start_date, end_date, queues, hours)
+def update_explorer_tab(start_date, end_date, queues, hours, segments):
+    filtered = filter_data(case_df, start_date, end_date, queues, hours, segments)
     if len(filtered) == 0:
         return html.Div("No data for selected filters.", className="alert alert-warning")
 
@@ -1599,7 +1876,6 @@ def update_explorer_tab(start_date, end_date, queues, hours):
     # ── Extra Transfer Count slicer ──────────────────────────────────────────
     xfer_slicer = html.Div([
         html.Div([
-            html.Span("🔄 ", style={'fontSize': '0.85rem'}),
             html.Span("TRANSFER COUNT", style={
                 'fontSize': '0.7rem', 'fontWeight': '700', 'color': '#444', 'letterSpacing': '0.5px'
             })
@@ -1631,10 +1907,10 @@ def update_explorer_tab(start_date, end_date, queues, hours):
         dbc.RadioItems(
             id='explorer-view',
             options=[
-                {'label': '📊  Case Summary',         'value': 'case'},
-                {'label': '🛤️  Queue Journey (raw)',   'value': 'journey'},
-                {'label': '🔄  Transfer Breakdown',    'value': 'transfer'},
-                {'label': '🔬  Queue Performance',     'value': 'queue'},
+                {'label': 'Case Summary',         'value': 'case'},
+                {'label': 'Queue Journey (raw)',   'value': 'journey'},
+                {'label': 'Transfer Breakdown',    'value': 'transfer'},
+                {'label': 'Queue Performance',     'value': 'queue'},
             ],
             value='case',
             inline=True,
@@ -1647,13 +1923,13 @@ def update_explorer_tab(start_date, end_date, queues, hours):
     # ── Download button ───────────────────────────────────────────────────────
     download_bar = html.Div([
         dbc.Button(
-            "⬇  Download Current View as CSV",
+            "Download Current View as CSV",
             id='btn-explorer-download',
             color='primary', outline=True, size='sm',
             style={'fontSize': '0.8rem', 'fontWeight': '600'},
             n_clicks=0,
         ),
-        html.Span(f"  {n_cases:,} cases in current filter",
+        html.Span(f"{n_cases:,} cases in current filter",
                   style={'fontSize': '0.78rem', 'color': '#888', 'marginLeft': '1rem',
                          'verticalAlign': 'middle'}),
         dcc.Download(id='explorer-download'),
@@ -1672,10 +1948,11 @@ def update_explorer_tab(start_date, end_date, queues, hours):
     [Input('explorer-view', 'value'),
      Input('explorer-xfer-filter', 'value'),
      Input('explorer-date-filter', 'start_date'), Input('explorer-date-filter', 'end_date'),
-     Input('explorer-queue-filter', 'value'),    Input('explorer-hours-filter', 'value')]
+     Input('explorer-queue-filter', 'value'),    Input('explorer-hours-filter', 'value'),
+     Input('explorer-segment-filter', 'value')]
 )
-def update_explorer_table(view, xfer_bins, start_date, end_date, queues, hours):
-    filtered = filter_data(case_df, start_date, end_date, queues, hours)
+def update_explorer_table(view, xfer_bins, start_date, end_date, queues, hours, segments):
+    filtered = filter_data(case_df, start_date, end_date, queues, hours, segments)
     if len(filtered) == 0:
         return html.Div("No data.", className="alert alert-warning")
 
@@ -1723,7 +2000,7 @@ def update_explorer_table(view, xfer_bins, start_date, end_date, queues, hours):
     return html.Div([
         html.Div([
             html.Span(label, style={'fontWeight': '700', 'fontSize': '0.9rem', 'color': '#201F1E'}),
-            html.Span(f'  —  {sub}',
+            html.Span(f'— {sub}',
                       style={'fontSize': '0.78rem', 'color': '#888', 'marginLeft': '0.3rem'}),
         ], style={'marginBottom': '0.6rem'}),
         html.P("Use column headers to sort. Type in the filter row (grey) to search within any column.",
@@ -1738,11 +2015,12 @@ def update_explorer_table(view, xfer_bins, start_date, end_date, queues, hours):
     [State('explorer-view', 'value'),
      State('explorer-xfer-filter', 'value'),
      State('explorer-date-filter', 'start_date'), State('explorer-date-filter', 'end_date'),
-     State('explorer-queue-filter', 'value'),     State('explorer-hours-filter', 'value')],
+     State('explorer-queue-filter', 'value'),     State('explorer-hours-filter', 'value'),
+     State('explorer-segment-filter', 'value')],
     prevent_initial_call=True,
 )
-def download_explorer_data(n_clicks, view, xfer_bins, start_date, end_date, queues, hours):
-    filtered = filter_data(case_df, start_date, end_date, queues, hours)
+def download_explorer_data(n_clicks, view, xfer_bins, start_date, end_date, queues, hours, segments):
+    filtered = filter_data(case_df, start_date, end_date, queues, hours, segments)
     if xfer_bins:
         filtered = filtered[filtered.transfer_bin.isin(xfer_bins)]
     filtered_cases = filtered.CASE_ID.unique()
@@ -1752,8 +2030,280 @@ def download_explorer_data(n_clicks, view, xfer_bins, start_date, end_date, queu
 
 
 # ==================================
+# TAB 8: ML INSIGHTS
+# ==================================
+
+def build_ml_insights_tab():
+    """Static Tab 8 — model comparison, feature importances, cluster profiles."""
+    art1 = ml_artifacts['model1']
+    art2 = ml_artifacts['model2']
+    art3 = ml_artifacts['model3']
+
+    # MODEL 1: Transfer Risk
+    m1_names = list(art1['all_scores'].keys())
+    m1_aucs  = [art1['all_scores'][n]['mean'] for n in m1_names]
+    m1_stds  = [art1['all_scores'][n]['std'] for n in m1_names]
+    m1_colors = [POWERBI_COLORS['primary'] if n == art1['best_name'] else '#C8C6C4' for n in m1_names]
+
+    fig_m1_compare = go.Figure(go.Bar(
+        x=m1_names, y=m1_aucs, error_y=dict(type='data', array=m1_stds, visible=True),
+        marker_color=m1_colors, text=[f"{v:.3f}" for v in m1_aucs], textposition='outside',
+    ))
+    fig_m1_compare.update_layout(
+        title="Model Comparison — 5-Fold CV AUC", yaxis_title="AUC Score",
+        width=360, height=380, autosize=False,
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(family='Segoe UI', color='#201F1E'),
+        yaxis=dict(showgrid=True, gridcolor='#EDEBE9', range=[0, 1.05]),
+        margin=dict(l=50, r=20, t=50, b=40),
+    )
+
+    imp_df = pd.DataFrame({
+        'Feature': art1['feature_names'], 'Importance': art1['importances']
+    }).sort_values('Importance', ascending=True).tail(10)
+    imp_df['Feature'] = imp_df['Feature'].str.replace('eq_', '', regex=False)
+
+    fig_m1_imp = go.Figure(go.Bar(
+        y=imp_df['Feature'], x=imp_df['Importance'],
+        orientation='h', marker_color=POWERBI_COLORS['primary'],
+    ))
+    fig_m1_imp.update_layout(
+        title="Top 10 Feature Importances", width=380, height=380, autosize=False,
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(family='Segoe UI', color='#201F1E'),
+        xaxis=dict(showgrid=True, gridcolor='#EDEBE9'),
+        margin=dict(l=130, r=20, t=50, b=40),
+    )
+
+    fig_m1_dist = go.Figure(go.Histogram(
+        x=case_df['transfer_risk'], nbinsx=20,
+        marker_color=POWERBI_COLORS['danger'], opacity=0.8,
+    ))
+    fig_m1_dist.update_layout(
+        title="Transfer Risk Score Distribution",
+        xaxis_title="Transfer Risk %", yaxis_title="Cases",
+        width=360, height=380, autosize=False,
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(family='Segoe UI', color='#201F1E'),
+        yaxis=dict(showgrid=True, gridcolor='#EDEBE9'),
+        margin=dict(l=50, r=20, t=50, b=40),
+    )
+
+    model1_section = html.Div([
+        html.Div([
+            html.H6("Model 1: Transfer Risk Prediction", style={
+                'fontWeight': '700', 'color': POWERBI_COLORS['primary'], 'marginBottom': '0.3rem'}),
+            html.P([
+                f"Best model: ", html.Strong(art1['best_name']),
+                f" — 5-fold CV AUC: {art1['cv_auc_mean']:.3f} (+/-{art1['cv_auc_std']:.3f})",
+            ], style={'fontSize': '0.85rem', 'color': '#555', 'marginBottom': '0'}),
+            html.P("Predicts the probability a Messenger case will require at least one transfer, "
+                   "using only information available at case creation (entry queue, in/out hours, day, time).",
+                   style={'fontSize': '0.8rem', 'color': '#888', 'marginBottom': '0'}),
+        ], className="insight-card mb-3"),
+        dbc.Row([
+            dbc.Col([dcc.Graph(figure=fig_m1_compare, config={'responsive': False})], md=4),
+            dbc.Col([dcc.Graph(figure=fig_m1_imp, config={'responsive': False})], md=4),
+            dbc.Col([dcc.Graph(figure=fig_m1_dist, config={'responsive': False})], md=4),
+        ]),
+    ])
+
+    # MODEL 2: Queue Recommendation
+    m2_names = list(art2['all_scores'].keys())
+    m2_accs  = [art2['all_scores'][n]['mean'] for n in m2_names]
+    m2_stds  = [art2['all_scores'][n]['std'] for n in m2_names]
+    m2_colors = [POWERBI_COLORS['success'] if n == art2['best_name'] else '#C8C6C4' for n in m2_names]
+
+    fig_m2_compare = go.Figure(go.Bar(
+        x=m2_names, y=[a * 100 for a in m2_accs],
+        error_y=dict(type='data', array=[s * 100 for s in m2_stds], visible=True),
+        marker_color=m2_colors,
+        text=[f"{v*100:.1f}%" for v in m2_accs], textposition='outside',
+    ))
+    fig_m2_compare.update_layout(
+        title="Model Comparison — 5-Fold CV Accuracy", yaxis_title="Accuracy %",
+        width=540, height=380, autosize=False,
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(family='Segoe UI', color='#201F1E'),
+        yaxis=dict(showgrid=True, gridcolor='#EDEBE9', range=[0, 105]),
+        margin=dict(l=50, r=20, t=50, b=40),
+    )
+
+    match_rate = case_df['queue_match'].mean() * 100
+    reroutable = int(case_df['queue_match'].eq(0).sum())
+    transferred = case_df[case_df.transfers > 0]
+    reroute_match = transferred['queue_match'].mean() * 100 if len(transferred) > 0 else 0
+
+    m2_kpis = dbc.Row([
+        dbc.Col([html.Div([html.H4("Recommendation Match Rate"),
+                           html.H2(f"{match_rate:.1f}%")],
+                          className="kpi-card kpi-success animated-card")], md=4),
+        dbc.Col([html.Div([html.H4("Cases Could Be Re-routed"),
+                           html.H2(f"{reroutable:,}")],
+                          className="kpi-card kpi-warning animated-card")], md=4),
+        dbc.Col([html.Div([html.H4("Match on Transferred Cases"),
+                           html.H2(f"{reroute_match:.1f}%")],
+                          className="kpi-card kpi-info animated-card")], md=4),
+    ], className="mb-3")
+
+    misroutes = case_df[
+        (case_df['entry_queue'] != case_df['final_queue']) & (case_df['queue_match'] == 0)
+    ]
+    if len(misroutes) > 0:
+        misroute_top = (misroutes.groupby(['entry_queue', 'final_queue'])
+                        .size().reset_index(name='count')
+                        .sort_values('count', ascending=False).head(8))
+        fig_misroute = go.Figure(go.Bar(
+            x=misroute_top.apply(lambda r: f"{r['entry_queue']} -> {r['final_queue']}", axis=1),
+            y=misroute_top['count'], marker_color=POWERBI_COLORS['warning'],
+            text=misroute_top['count'], textposition='outside',
+        ))
+    else:
+        fig_misroute = go.Figure()
+        fig_misroute.add_annotation(text="No misroutes detected", xref="paper", yref="paper",
+                                    x=0.5, y=0.5, showarrow=False)
+    fig_misroute.update_layout(
+        title="Top Misrouted Paths (Entry -> Actual Resolution Queue)",
+        width=540, height=380, autosize=False,
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(family='Segoe UI', color='#201F1E'),
+        yaxis=dict(showgrid=True, gridcolor='#EDEBE9'),
+        xaxis=dict(tickangle=-30), margin=dict(l=50, r=20, t=50, b=100),
+    )
+
+    confusion = pd.crosstab(case_df['final_queue'], case_df['recommended_queue'])
+    fig_confusion = go.Figure(go.Heatmap(
+        z=confusion.values, x=confusion.columns.tolist(), y=confusion.index.tolist(),
+        colorscale=[[0, '#F3F2F1'], [1, POWERBI_COLORS['primary']]],
+        text=confusion.values, texttemplate='%{text}', textfont=dict(size=10),
+    ))
+    fig_confusion.update_layout(
+        title="Recommended vs Actual Resolution Queue",
+        xaxis_title="Recommended Queue", yaxis_title="Actual Final Queue",
+        width=540, height=480, autosize=False,
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(family='Segoe UI', color='#201F1E', size=10),
+        margin=dict(l=130, r=20, t=50, b=120), xaxis=dict(tickangle=-45),
+    )
+
+    model2_section = html.Div([
+        html.Div([
+            html.H6("Model 2: Optimal First-Queue Recommendation", style={
+                'fontWeight': '700', 'color': POWERBI_COLORS['success'], 'marginBottom': '0.3rem'}),
+            html.P([
+                f"Best model: ", html.Strong(art2['best_name']),
+                f" — 5-fold CV Accuracy: {art2['cv_acc_mean']*100:.1f}% (+/-{art2['cv_acc_std']*100:.1f}%)",
+            ], style={'fontSize': '0.85rem', 'color': '#555', 'marginBottom': '0'}),
+            html.P("Predicts which queue will ultimately resolve the case. If the model is right, "
+                   "routing directly to that queue eliminates every intermediate transfer.",
+                   style={'fontSize': '0.8rem', 'color': '#888', 'marginBottom': '0'}),
+        ], className="insight-card mb-3"),
+        dbc.Row([dbc.Col([dcc.Graph(figure=fig_m2_compare, config={'responsive': False})], md=6),
+                 dbc.Col([m2_kpis], md=6)]),
+        dbc.Row([
+            dbc.Col([dcc.Graph(figure=fig_misroute, config={'responsive': False})], md=6),
+            dbc.Col([dcc.Graph(figure=fig_confusion, config={'responsive': False})], md=6),
+        ]),
+    ])
+
+    # MODEL 3: Journey Clustering
+    pca_df = pd.DataFrame({
+        'PC1': art3['pca_coords'][:, 0], 'PC2': art3['pca_coords'][:, 1],
+        'Cluster': case_df['cluster_name'], 'Case': case_df['CASE_ID'].astype(str),
+        'Transfers': case_df['transfers'], 'AHT': case_df['total_active_aht'].round(0),
+    })
+    fig_pca = px.scatter(pca_df, x='PC1', y='PC2', color='Cluster',
+                         hover_data=['Case', 'Transfers', 'AHT'],
+                         color_discrete_sequence=CHART_COLORS)
+    fig_pca.update_layout(
+        title=f"Journey Clusters (PCA 2D) — Silhouette: {art3['silhouette']:.2f}",
+        width=600, height=480, autosize=False,
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(family='Segoe UI', color='#201F1E'),
+        xaxis=dict(showgrid=True, gridcolor='#EDEBE9'),
+        yaxis=dict(showgrid=True, gridcolor='#EDEBE9'),
+        margin=dict(l=50, r=20, t=60, b=40),
+    )
+
+    cluster_sizes = case_df['cluster_name'].value_counts()
+    fig_pie = go.Figure(go.Pie(
+        labels=cluster_sizes.index, values=cluster_sizes.values,
+        marker=dict(colors=CHART_COLORS[:len(cluster_sizes)]),
+        textinfo='label+percent', hole=0.35, textfont=dict(size=10),
+    ))
+    fig_pie.update_layout(
+        title="Cluster Size Distribution", width=480, height=400, autosize=False,
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(family='Segoe UI', color='#201F1E'),
+        margin=dict(l=20, r=20, t=50, b=20), showlegend=False,
+    )
+
+    profiles = art3['cluster_profiles']
+    card_colors = CHART_COLORS[:len(profiles)]
+    profile_cards = []
+    for i, (idx, row) in enumerate(profiles.iterrows()):
+        cname = art3['name_map'][idx]
+        profile_cards.append(
+            dbc.Col([html.Div([
+                html.Div(cname, style={'fontWeight': '700', 'color': card_colors[i],
+                                       'fontSize': '0.9rem', 'marginBottom': '0.3rem'}),
+                html.Div(f"{int(row['count'])} cases",
+                         style={'fontSize': '0.75rem', 'color': '#888', 'marginBottom': '0.5rem'}),
+                html.Div([
+                    html.Div(f"Avg Transfers: {row['avg_transfers']:.1f}", style={'fontSize': '0.8rem', 'marginBottom': '0.15rem'}),
+                    html.Div(f"Avg Routing Days: {row['avg_routing']:.1f}", style={'fontSize': '0.8rem', 'marginBottom': '0.15rem'}),
+                    html.Div(f"Avg AHT: {row['avg_aht']:.0f} min", style={'fontSize': '0.8rem', 'marginBottom': '0.15rem'}),
+                    html.Div(f"Avg Messages: {row['avg_messages']:.1f}", style={'fontSize': '0.8rem', 'marginBottom': '0.15rem'}),
+                    html.Div(f"Loop Rate: {row['loop_rate']*100:.0f}%", style={'fontSize': '0.8rem'}),
+                ], style={'color': '#605E5C'}),
+            ], style={
+                'background': 'white', 'borderRadius': '8px', 'padding': '1rem 1.2rem',
+                'height': '100%', 'boxShadow': '0 1.6px 3.6px 0 rgba(0,0,0,.132)',
+                'borderTop': f'3px solid {card_colors[i]}',
+            })], md=12 // max(len(profiles), 1), className="mb-3")
+        )
+
+    model3_section = html.Div([
+        html.Div([
+            html.H6("Model 3: Journey Clustering", style={
+                'fontWeight': '700', 'color': POWERBI_COLORS['secondary'], 'marginBottom': '0.3rem'}),
+            html.P(f"KMeans (k={art3['best_k']}) — Silhouette Score: {art3['silhouette']:.3f}",
+                   style={'fontSize': '0.85rem', 'color': '#555', 'marginBottom': '0'}),
+            html.P("Groups Messenger cases into natural journey archetypes based on transfer patterns, "
+                   "handle time, routing days, message volume, and queue visit patterns.",
+                   style={'fontSize': '0.8rem', 'color': '#888', 'marginBottom': '0'}),
+        ], className="insight-card mb-3"),
+        dbc.Row(profile_cards, className="mb-3"),
+        dbc.Row([
+            dbc.Col([dcc.Graph(figure=fig_pca, config={'responsive': False})], md=7),
+            dbc.Col([dcc.Graph(figure=fig_pie, config={'responsive': False})], md=5),
+        ]),
+    ])
+
+    return html.Div([
+        html.Div([
+            html.Div("PREDICTIVE MODELS", style={
+                'fontSize': '0.65rem', 'fontWeight': '700', 'letterSpacing': '1.5px',
+                'color': '#00BCF2', 'marginBottom': '0.3rem', 'textTransform': 'uppercase',
+            }),
+            html.H5("ML Insights — Messenger Transfer Intelligence", style={
+                'fontWeight': '700', 'color': '#201F1E', 'marginBottom': '0.3rem'}),
+            html.P("Three models trained on case data. Transfer Risk and Queue Recommendation use only "
+                   "features available at case creation — they could be deployed in real-time. "
+                   "Journey Clustering identifies natural case archetypes after resolution.",
+                   style={'color': '#888', 'fontSize': '0.85rem', 'marginBottom': '0'}),
+        ], className="mb-4"),
+        model1_section,
+        html.Hr(className="divider"),
+        model2_section,
+        html.Hr(className="divider"),
+        model3_section,
+    ])
+
+
+# ==================================
 # RUN APP
 # ==================================
 
 if __name__ == '__main__':
-    app.run(debug=True, port=8050)
+    app.run(debug=False, port=8050)
