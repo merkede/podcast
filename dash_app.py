@@ -5,7 +5,7 @@ Executive Case Routing Analytics Dashboard - Dash Version
 
 import os
 import dash
-from dash import dcc, html, dash_table, Input, Output, State, callback
+from dash import dcc, html, dash_table, Input, Output, State, callback, ALL, ctx
 import dash_bootstrap_components as dbc
 import pandas as pd
 import numpy as np
@@ -1769,16 +1769,44 @@ def update_journey_analysis(selected_queue, depth, start_date, end_date, queues,
             if len(path) > 1:
                 backward_paths.append(path)
 
-    # Complete paths
+    # Complete paths with case ID mapping
+    path_to_cases = {}
+    for cid in q_cases:
+        j = df_f[df_f.CASE_ID == cid].sort_values('QUEUE_ORDER').QUEUE_NEW.tolist()
+        path_str = ' → '.join(j)
+        path_to_cases.setdefault(path_str, []).append(str(cid))
+
     complete_paths = []
     for cid in q_cases:
         j = df_f[df_f.CASE_ID == cid].sort_values('QUEUE_ORDER').QUEUE_NEW.tolist()
-        complete_paths.append('→ '.join(j))
+        complete_paths.append(' → '.join(j))
 
     total_through = len(complete_paths)
-    path_counts = pd.Series(complete_paths).value_counts().head(10).reset_index()
-    path_counts.columns = ['Journey Path', 'Cases']
-    path_counts['% of Cases'] = (path_counts['Cases'] / total_through * 100).round(1).astype(str) + '%'
+    path_series = pd.Series(complete_paths)
+    top_paths = path_series.value_counts().head(10).reset_index()
+    top_paths.columns = ['Journey Path', 'Cases']
+    top_paths['% of Cases'] = (top_paths['Cases'] / total_through * 100).round(1)
+
+    # Cost columns per path
+    path_aht, path_routing, path_msgs = [], [], []
+    for path_str in top_paths['Journey Path']:
+        cids = path_to_cases.get(path_str, [])
+        path_cases = filtered[filtered.CASE_ID.astype(str).isin(cids)]
+        path_aht.append(path_cases['total_active_aht'].median() if len(path_cases) > 0 else 0)
+        path_routing.append(path_cases['routing_days'].median() if len(path_cases) > 0 else 0)
+        path_msgs.append(path_cases['messages'].median() if len(path_cases) > 0 else 0)
+    top_paths['Med AHT (min)'] = [f"{v:.0f}" for v in path_aht]
+    top_paths['Med Routing (days)'] = [f"{v:.1f}" for v in path_routing]
+    top_paths['Med Messages'] = [f"{v:.0f}" for v in path_msgs]
+    top_paths['% of Cases'] = top_paths['% of Cases'].apply(lambda v: f"{v:.1f}%")
+
+    # Avoidable transfers: entry queue == final queue (round trip)
+    avoidable_count = 0
+    for path_str, cids in path_to_cases.items():
+        queues_in_path = [q.strip() for q in path_str.split('→')]
+        if len(queues_in_path) > 1 and queues_in_path[0] == queues_in_path[-1]:
+            avoidable_count += len(cids)
+    avoidable_pct = (avoidable_count / total_through * 100) if total_through > 0 else 0
 
     # Stats
     stats_cards = dbc.Row([
@@ -1793,26 +1821,59 @@ def update_journey_analysis(selected_queue, depth, start_date, end_date, queues,
                           className="kpi-card kpi-info animated-card")], md=3),
     ], className="mb-4")
 
+    # Avoidable transfer callout
+    avoidable_callout = html.Div()
+    if avoidable_count > 0:
+        avoidable_callout = html.Div([
+            html.P([
+                html.Strong(f"{avoidable_count} cases ({avoidable_pct:.1f}%) took a round trip", style={'color': '#D32F2F'}),
+                f" back to the same queue they started in. These cases were transferred out and eventually "
+                f"returned to the entry queue for resolution. Every one of these transfers was avoidable."
+            ], style={'margin': 0, 'fontSize': '0.87rem', 'color': '#333'})
+        ], className="insight-card mb-3")
+
     path_note = html.Div([
         html.P([
-            "",
-            html.Strong("How to read this table: "),
-            f"Percentages show each path's share of all {total_through:,} cases that touched ",
-            html.Strong(selected_queue),
-            ". This includes both first-touch and transferred cases. Percentages sum to 100% across all paths. ",
-            "Paths with multiple queues (→) represent cases that were transferred at least once."
+            html.Strong("Click any row "),
+            "to see the individual case IDs for that pathway. Cost columns show the median AHT, routing wait, "
+            f"and customer messages for cases on each path. Showing top 10 of {total_through:,} cases through ",
+            html.Strong(selected_queue), ".",
         ], style={'margin': 0, 'fontSize': '0.87rem', 'color': '#333'})
     ], className="insight-card mb-3")
 
-    path_table = dbc.Table.from_dataframe(
-        path_counts, striped=True, bordered=True, hover=True, responsive=True, className="mt-2"
-    )
+    # Build clickable table rows
+    table_header = html.Thead(html.Tr([
+        html.Th(c, style={'backgroundColor': '#0078D4', 'color': 'white', 'fontWeight': '700',
+                          'fontSize': '0.75rem', 'textTransform': 'uppercase', 'letterSpacing': '0.4px',
+                          'padding': '10px 12px', 'border': 'none'})
+        for c in ['Journey Path', 'Cases', '% of Cases', 'Med AHT (min)', 'Med Routing (days)', 'Med Messages']
+    ]))
+    table_rows = []
+    for i, row in top_paths.iterrows():
+        table_rows.append(html.Tr([
+            html.Td(row['Journey Path'], style={'fontSize': '0.82rem', 'maxWidth': '400px', 'wordWrap': 'break-word'}),
+            html.Td(row['Cases'], style={'fontSize': '0.82rem', 'textAlign': 'center'}),
+            html.Td(row['% of Cases'], style={'fontSize': '0.82rem', 'textAlign': 'center'}),
+            html.Td(row['Med AHT (min)'], style={'fontSize': '0.82rem', 'textAlign': 'center'}),
+            html.Td(row['Med Routing (days)'], style={'fontSize': '0.82rem', 'textAlign': 'center'}),
+            html.Td(row['Med Messages'], style={'fontSize': '0.82rem', 'textAlign': 'center'}),
+        ], id={'type': 'journey-path-row', 'index': i}, style={'cursor': 'pointer'},
+           className="journey-clickable-row"))
+
+    path_table = dbc.Table([table_header, html.Tbody(table_rows)],
+                           striped=True, bordered=True, hover=True, responsive=True, className="mt-2")
+
+    # Store path-to-cases mapping for the modal callback
+    store_data = {row['Journey Path']: path_to_cases.get(row['Journey Path'], [])
+                  for _, row in top_paths.iterrows()}
 
     forward_sankey  = create_sankey_from_paths(forward_paths,  f"Forward Journey from {selected_queue}")
     backward_sankey = create_sankey_from_paths(backward_paths, f"Backward Journey to {selected_queue}")
 
     return html.Div([
+        dcc.Store(id='journey-path-store', data=store_data),
         stats_cards,
+        avoidable_callout,
         html.Hr(className="divider"),
 
         html.H6(f"Forward View: Where do customers go FROM {selected_queue}?",
@@ -1832,7 +1893,13 @@ def update_journey_analysis(selected_queue, depth, start_date, end_date, queues,
         html.H6(f"Top 10 Complete Journey Paths Through {selected_queue}",
                 style={'fontWeight': '600', 'color': '#201F1E'}),
         path_note,
-        path_table
+        path_table,
+
+        # Modal for case detail popup
+        dbc.Modal([
+            dbc.ModalHeader(dbc.ModalTitle(id='journey-modal-title')),
+            dbc.ModalBody(id='journey-modal-body'),
+        ], id='journey-modal', size='xl', is_open=False),
     ])
 
 
@@ -1882,6 +1949,85 @@ def create_sankey_from_paths(paths, title):
         autosize=False
     )
     return fig
+
+
+@callback(
+    [Output('journey-modal', 'is_open'),
+     Output('journey-modal-title', 'children'),
+     Output('journey-modal-body', 'children')],
+    Input({'type': 'journey-path-row', 'index': ALL}, 'n_clicks'),
+    State('journey-path-store', 'data'),
+    prevent_initial_call=True
+)
+def open_journey_modal(n_clicks, store_data):
+    if not any(n_clicks) or not store_data:
+        return False, "", ""
+
+    # Find which row was clicked
+    triggered = ctx.triggered_id
+    if not triggered or not isinstance(triggered, dict):
+        return False, "", ""
+    row_idx = triggered['index']
+
+    # Get the path string and case IDs
+    paths = list(store_data.keys())
+    if row_idx >= len(paths):
+        return False, "", ""
+    path_str = paths[row_idx]
+    case_ids = store_data[path_str]
+
+    # Build case detail table from case_df
+    detail = case_df[case_df.CASE_ID.astype(str).isin(case_ids)].copy()
+    if len(detail) == 0:
+        return True, f"Cases on: {path_str}", html.P("No case data found.")
+
+    show_cols = ['CASE_ID', 'entry_queue', 'final_queue', 'transfers', 'total_active_aht',
+                 'routing_days', 'messages', 'segment']
+    # Add ML columns if available
+    for ml_col in ['transfer_risk', 'recommended_queue', 'cluster_name']:
+        if ml_col in detail.columns:
+            show_cols.append(ml_col)
+    detail_show = detail[[c for c in show_cols if c in detail.columns]].copy()
+
+    # Friendly column names
+    rename = {'CASE_ID': 'Case ID', 'entry_queue': 'Entry Queue', 'final_queue': 'Final Queue',
+              'transfers': 'Transfers', 'total_active_aht': 'AHT (min)', 'routing_days': 'Routing Days',
+              'messages': 'Messages', 'segment': 'Segment', 'transfer_risk': 'Transfer Risk %',
+              'recommended_queue': 'Recommended Queue', 'cluster_name': 'Cluster'}
+    detail_show = detail_show.rename(columns=rename)
+    if 'AHT (min)' in detail_show.columns:
+        detail_show['AHT (min)'] = detail_show['AHT (min)'].round(0)
+    if 'Routing Days' in detail_show.columns:
+        detail_show['Routing Days'] = detail_show['Routing Days'].round(1)
+
+    # Summary stats
+    n = len(detail)
+    med_aht = detail['total_active_aht'].median() if 'total_active_aht' in detail.columns else 0
+    med_routing = detail['routing_days'].median() if 'routing_days' in detail.columns else 0
+    med_msgs = detail['messages'].median() if 'messages' in detail.columns else 0
+
+    summary = html.Div([
+        dbc.Row([
+            dbc.Col([html.Div([html.H4("Cases"), html.H2(f"{n}")],
+                              className="kpi-card kpi-primary")], md=3),
+            dbc.Col([html.Div([html.H4("Med AHT"), html.H2(f"{med_aht:.0f} min")],
+                              className="kpi-card kpi-danger")], md=3),
+            dbc.Col([html.Div([html.H4("Med Routing"), html.H2(f"{med_routing:.1f} days")],
+                              className="kpi-card kpi-warning")], md=3),
+            dbc.Col([html.Div([html.H4("Med Messages"), html.H2(f"{med_msgs:.0f}")],
+                              className="kpi-card kpi-info")], md=3),
+        ], className="mb-3"),
+    ])
+
+    table = dbc.Table.from_dataframe(
+        detail_show, striped=True, bordered=True, hover=True, responsive=True,
+        style={'fontSize': '0.8rem'}
+    )
+
+    hops = len([q.strip() for q in path_str.split('→')])
+    title = f"{n} Cases on {hops}-Queue Path"
+
+    return True, title, html.Div([summary, table])
 
 
 # ==================================
