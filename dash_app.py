@@ -164,15 +164,24 @@ def prepare_data(df):
     )
     case = case.merge(loops, on="CASE_ID", how="left")
 
+    # Fill NaN in key numeric columns
+    case['transfers'] = case['transfers'].fillna(0).astype(int)
+    case['inhours'] = case['inhours'].fillna(1).astype(int)
+    case['messages'] = case['messages'].fillna(0)
+    case['total_active_aht'] = case['total_active_aht'].fillna(0)
+    case['routing_days'] = case['routing_days'].fillna(0)
+    case['loop_flag'] = case['loop_flag'].fillna(0).astype(int)
+
     case['message_intensity'] = case['messages'] / (case['total_active_aht'] + 1)
-    case['interaction_density'] = case['interactions'] / (case['total_active_aht'] + 1)
+    case['interaction_density'] = case['interactions'].fillna(0) / (case['total_active_aht'] + 1)
     case['ftr'] = (case['transfers'] == 0).astype(int)
     case['transfer_bin'] = pd.cut(case['transfers'],
                                   bins=[-0.1, 0, 1, 2, 100],
                                   labels=['0', '1', '2', '3+'])
     # Segment: Retail = starts with "HD RTL A" but NOT "HD RTL A PRT*"; Claims = everything else
+    eq = case['entry_queue'].fillna('')
     case['segment'] = np.where(
-        case['entry_queue'].str.startswith('HD RTL A') & ~case['entry_queue'].str.startswith('HD RTL A PRT'),
+        eq.str.startswith('HD RTL A') & ~eq.str.startswith('HD RTL A PRT'),
         'Retail', 'Claims'
     )
     return df, case
@@ -189,17 +198,32 @@ def build_ml_models(case_df, df_raw):
     artifacts = {}
     df = case_df.copy()
 
-    df['day_of_week'] = df['created_at'].dt.dayofweek
-    df['hour_of_day'] = df['close_datetime'].dt.hour
+    df['day_of_week'] = pd.to_datetime(df['created_at'], errors='coerce').dt.dayofweek
+    df['hour_of_day'] = pd.to_datetime(df['close_datetime'], errors='coerce').dt.hour
+
+    # Fill NaN in derived time features with median (fallback to 0 if all NaN)
+    df['day_of_week'] = df['day_of_week'].fillna(df['day_of_week'].median() if df['day_of_week'].notna().any() else 0).astype(int)
+    df['hour_of_day'] = df['hour_of_day'].fillna(df['hour_of_day'].median() if df['hour_of_day'].notna().any() else 12).astype(int)
 
     feature_cols_base = ['inhours', 'day_of_week', 'hour_of_day']
     entry_dummies = pd.get_dummies(df['entry_queue'], prefix='eq')
     X = pd.concat([df[feature_cols_base], entry_dummies], axis=1).astype(float)
+    # Fill any remaining NaN (ensures GradientBoostingClassifier compatibility)
+    X = X.fillna(0)
 
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    # Drop rows with NaN in target columns for training, predict on all
+    valid_mask = df['ftr'].notna() & df['final_queue'].notna() & df['entry_queue'].notna()
+    X_valid = X[valid_mask]
+    df_valid = df[valid_mask]
+
+    # Use fewer folds if dataset is small or has rare classes
+    min_class_count = min(df_valid['ftr'].value_counts().min(),
+                          df_valid['final_queue'].value_counts().min())
+    n_splits = min(5, max(2, min_class_count))
+    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
 
     # MODEL 1: Transfer Risk (Binary)
-    y_transfer = (df['ftr'] == 0).astype(int)
+    y_transfer = (df_valid['ftr'] == 0).astype(int)
 
     candidates_m1 = {
         'Random Forest': RandomForestClassifier(
@@ -215,18 +239,18 @@ def build_ml_models(case_df, df_raw):
 
     m1_scores = {}
     for name, model in candidates_m1.items():
-        scores = cross_val_score(model, X, y_transfer, cv=cv, scoring='roc_auc')
+        scores = cross_val_score(model, X_valid, y_transfer, cv=cv, scoring='roc_auc')
         m1_scores[name] = {'mean': scores.mean(), 'std': scores.std()}
 
     best_m1_name = max(m1_scores, key=lambda k: m1_scores[k]['mean'])
     best_m1 = candidates_m1[best_m1_name]
-    best_m1.fit(X, y_transfer)
+    best_m1.fit(X_valid, y_transfer)
     df['transfer_risk'] = (best_m1.predict_proba(X)[:, 1] * 100).round(1)
 
     if hasattr(best_m1, 'feature_importances_'):
         m1_importances = best_m1.feature_importances_
     else:
-        perm = permutation_importance(best_m1, X, y_transfer, n_repeats=10, random_state=42)
+        perm = permutation_importance(best_m1, X_valid, y_transfer, n_repeats=10, random_state=42)
         m1_importances = perm.importances_mean
 
     artifacts['model1'] = {
@@ -237,7 +261,7 @@ def build_ml_models(case_df, df_raw):
     }
 
     # MODEL 2: Optimal First-Queue Recommendation (Multiclass)
-    y_queue = df['final_queue']
+    y_queue = df_valid['final_queue']
 
     candidates_m2 = {
         'Random Forest': RandomForestClassifier(
@@ -253,19 +277,19 @@ def build_ml_models(case_df, df_raw):
 
     m2_scores = {}
     for name, model in candidates_m2.items():
-        scores = cross_val_score(model, X, y_queue, cv=cv, scoring='accuracy')
+        scores = cross_val_score(model, X_valid, y_queue, cv=cv, scoring='accuracy')
         m2_scores[name] = {'mean': scores.mean(), 'std': scores.std()}
 
     best_m2_name = max(m2_scores, key=lambda k: m2_scores[k]['mean'])
     best_m2 = candidates_m2[best_m2_name]
-    best_m2.fit(X, y_queue)
+    best_m2.fit(X_valid, y_queue)
     df['recommended_queue'] = best_m2.predict(X)
     df['queue_match'] = (df['recommended_queue'] == df['final_queue']).astype(int)
 
     if hasattr(best_m2, 'feature_importances_'):
         m2_importances = best_m2.feature_importances_
     else:
-        perm = permutation_importance(best_m2, X, y_queue, n_repeats=10, random_state=42)
+        perm = permutation_importance(best_m2, X_valid, y_queue, n_repeats=10, random_state=42)
         m2_importances = perm.importances_mean
 
     artifacts['model2'] = {
@@ -281,7 +305,7 @@ def build_ml_models(case_df, df_raw):
 
     cluster_features = ['transfers', 'routing_days', 'total_active_aht',
                         'messages', 'loop_flag', 'inhours', 'message_intensity']
-    X_cluster_base = df.set_index('CASE_ID')[cluster_features]
+    X_cluster_base = df.set_index('CASE_ID')[cluster_features].fillna(0)
     X_cluster = X_cluster_base.join(queue_counts, how='left').fillna(0)
 
     scaler = StandardScaler()
