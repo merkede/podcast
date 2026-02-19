@@ -2370,19 +2370,6 @@ def build_ml_insights_tab():
         margin=dict(l=50, r=20, t=60, b=40),
     )
 
-    cluster_sizes = case_df['cluster_name'].value_counts()
-    fig_pie = go.Figure(go.Pie(
-        labels=cluster_sizes.index, values=cluster_sizes.values,
-        marker=dict(colors=CHART_COLORS[:len(cluster_sizes)]),
-        textinfo='label+percent', hole=0.35, textfont=dict(size=10),
-    ))
-    fig_pie.update_layout(
-        title="Cluster Size Distribution", width=480, height=400, autosize=False,
-        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-        font=dict(family='Segoe UI', color='#201F1E'),
-        margin=dict(l=20, r=20, t=50, b=20), showlegend=False,
-    )
-
     profiles = art3['cluster_profiles']
     card_colors = CHART_COLORS[:len(profiles)]
     profile_cards = []
@@ -2415,6 +2402,54 @@ def build_ml_insights_tab():
                         if row['avg_transfers'] >= 3)
     anomaly_pct = (anomaly_count / len(case_df) * 100) if len(case_df) > 0 else 0
 
+    # Build dynamic cluster narrative
+    total_cases = len(case_df)
+    sorted_by_size = profiles.sort_values('count', ascending=False)
+    narrative_items = []
+    for idx, row in sorted_by_size.iterrows():
+        cname = art3['name_map'][idx]
+        count = int(row['count'])
+        pct = count / total_cases * 100 if total_cases > 0 else 0
+        is_anomaly = row['avg_transfers'] >= 3
+        badge = html.Span(" ANOMALY", style={
+            'fontSize': '0.65rem', 'fontWeight': '700', 'color': 'white',
+            'background': '#D32F2F', 'borderRadius': '3px', 'padding': '1px 5px',
+            'marginLeft': '0.4rem', 'verticalAlign': 'middle',
+        }) if is_anomaly else None
+
+        desc_parts = []
+        if row['avg_transfers'] < 0.5:
+            desc_parts.append(f"These {count} cases ({pct:.0f}%) were resolved with almost no transfers. ")
+            desc_parts.append("This is the ideal routing outcome.")
+        elif row['avg_transfers'] < 2:
+            desc_parts.append(f"{count} cases ({pct:.0f}%) with moderate transfer activity. ")
+            desc_parts.append(f"Averaging {row['avg_transfers']:.1f} transfers and {row['avg_aht']:.0f} min AHT.")
+        else:
+            desc_parts.append(f"{count} cases ({pct:.0f}%) averaging {row['avg_transfers']:.1f} transfers, ")
+            desc_parts.append(f"{row['avg_aht']:.0f} min AHT, and {row['avg_routing']:.1f} routing days. ")
+            if row['loop_rate'] > 0.2:
+                desc_parts.append(f"Loop rate of {row['loop_rate']*100:.0f}% suggests cases are bouncing back to queues they already visited.")
+            if is_anomaly:
+                desc_parts.append(" These are the costliest cases in the system and the primary target for routing improvement.")
+
+        narrative_items.append(html.Div([
+            html.Div([html.Strong(cname), badge] if badge else [html.Strong(cname)],
+                     style={'fontSize': '0.88rem', 'marginBottom': '0.2rem'}),
+            html.P(''.join(desc_parts), style={'fontSize': '0.8rem', 'color': '#605E5C',
+                                               'margin': '0 0 0.6rem 0', 'lineHeight': '1.5'}),
+        ]))
+
+    cluster_narrative = html.Div([
+        html.Div("What the clusters reveal", style={
+            'fontWeight': '700', 'fontSize': '0.9rem', 'color': '#201F1E',
+            'marginBottom': '0.6rem',
+        }),
+        *narrative_items,
+    ], style={
+        'background': 'white', 'borderRadius': '8px', 'padding': '1.2rem 1.4rem',
+        'boxShadow': '0 1.6px 3.6px 0 rgba(0,0,0,.132)', 'height': '100%',
+    })
+
     model3_section = html.Div([
         html.Div([
             html.H6("Model 3: Clustering & Anomaly Detection", style={
@@ -2435,7 +2470,7 @@ def build_ml_insights_tab():
         dbc.Row(profile_cards, className="mb-3"),
         dbc.Row([
             dbc.Col([dcc.Graph(figure=fig_pca, config={'responsive': False})], md=7),
-            dbc.Col([dcc.Graph(figure=fig_pie, config={'responsive': False})], md=5),
+            dbc.Col([cluster_narrative], md=5),
         ]),
     ])
 
