@@ -3,6 +3,7 @@ Executive Case Routing Analytics Dashboard - Dash Version
 8-Tab structure: Overview | Process | Cost & Effort | Hours Effect | Queue Intel | Journey | Data Explorer | ML Insights
 """
 
+import os
 import dash
 from dash import dcc, html, dash_table, Input, Output, State, callback
 import dash_bootstrap_components as dbc
