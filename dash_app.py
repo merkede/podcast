@@ -5,7 +5,8 @@ Executive Case Routing Analytics Dashboard - Dash Version
 
 import os
 import dash
-from dash import dcc, html, dash_table, Input, Output, State, callback, ALL, ctx
+from dash import dcc, html, dash_table, Input, Output, State, callback, ctx
+from dash import ALL
 import dash_bootstrap_components as dbc
 import pandas as pd
 import numpy as np
@@ -1485,11 +1486,21 @@ def update_hours_heatmap(view, start_date, end_date, queues, hours, segments):
     pivot_wide = pivot_wide.reindex(index=range(7), columns=range(24), fill_value=0)
     pivot_wide = pivot_wide.fillna(0)
 
+    # Normalise each row so it sums to 100% of that day (except in/out hours which is already a %)
+    if view != 'inhours':
+        row_sums = pivot_wide.sum(axis=1).replace(0, np.nan)
+        pivot_wide = pivot_wide.div(row_sums, axis=0).fillna(0) * 100
+        display_unit = '% of day'
+        annotation_fmt = lambda v: f"{v:.1f}%"
+    else:
+        display_unit = unit
+        annotation_fmt = lambda v: f"{v:.0%}"
+
     vals = pivot_wide.values
     vmin, vmax = np.nanmin(vals), np.nanmax(vals)
     mid = (vmin + vmax) / 2 if vals.size > 0 else 0
 
-    # Build annotations with smart text color
+    # Build annotations with smart text colour
     annotations = []
     for i in range(7):
         for j in range(24):
@@ -1497,15 +1508,9 @@ def update_hours_heatmap(view, start_date, end_date, queues, hours, segments):
             if np.isnan(v):
                 continue
             font_color = 'white' if v > mid else '#333'
-            if view == 'inhours':
-                text = f"{v:.0%}"
-            elif fmt == '.1f':
-                text = f"{v:.1f}"
-            else:
-                text = f"{v:.0f}"
             annotations.append(dict(
-                x=HOUR_LABELS[j], y=DAY_NAMES[i], text=text,
-                font=dict(size=10, family='Segoe UI', color=font_color),
+                x=HOUR_LABELS[j], y=DAY_NAMES[i], text=annotation_fmt(v),
+                font=dict(size=9, family='Segoe UI', color=font_color),
                 showarrow=False, xref='x', yref='y'
             ))
 
@@ -1515,15 +1520,16 @@ def update_hours_heatmap(view, start_date, end_date, queues, hours, segments):
         y=DAY_NAMES,
         colorscale=cfg['colorscale'],
         showscale=True,
-        colorbar=dict(title=dict(text=unit, font=dict(size=11)),
+        colorbar=dict(title=dict(text=display_unit, font=dict(size=11)),
                       thickness=14, len=0.85, outlinewidth=0),
         xgap=2, ygap=2,
-        hovertemplate='%{y}, %{x}<br>' + unit + ': %{z' + (':' + fmt if fmt != '.0%' else '') + '}<extra></extra>',
+        hovertemplate='%{y}, %{x}<br>' + display_unit + ': %{z:.1f}<extra></extra>',
     ))
 
+    normalised_note = " Each row normalised to 100% of that day's total." if view != 'inhours' else ''
     fig.update_layout(
-        title=dict(text=cfg['title'],
-                   font=dict(size=14, color='#201F1E', family='Segoe UI')),
+        title=dict(text=cfg['title'] + normalised_note,
+                   font=dict(size=13, color='#201F1E', family='Segoe UI')),
         xaxis=dict(title="Hour of Day", tickfont=dict(size=10), tickangle=0,
                    dtick=1, side='bottom'),
         yaxis=dict(tickfont=dict(size=11), autorange='reversed'),
@@ -1536,7 +1542,7 @@ def update_hours_heatmap(view, start_date, end_date, queues, hours, segments):
 
     return html.Div([
         dcc.Graph(figure=fig, config={'responsive': False}),
-        html.P(f"Showing {len(filtered):,} cases. Cells show {unit} values. Darker = higher.",
+        html.P(f"Showing {len(filtered):,} cases. Each cell = % share of that day's total. Darker = higher concentration.",
                style={'fontSize': '0.78rem', 'color': '#999', 'marginTop': '0.5rem',
                       'textAlign': 'center'}),
     ])
