@@ -97,8 +97,10 @@ def prepare_data(df):
 
 def export_cases(case_df, path):
     df = case_df.copy()
-    df["CASE_ID"] = df["CASE_ID"].astype(str)
-    df["transfer_bin"] = df["transfer_bin"].astype(str)
+    # Strip .0 suffix from CASE_ID (occurs when stored as float64)
+    df["CASE_ID"] = df["CASE_ID"].astype(str).str.replace(r"\.0$", "", regex=True)
+    # Ensure transfer_bin is a clean string; fill any NaN with '3+' (catches edge cases)
+    df["transfer_bin"] = df["transfer_bin"].astype(str).replace("nan", "3+")
     df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce")
     df["close_datetime"] = pd.to_datetime(df["close_datetime"], errors="coerce")
     df["month"] = df["created_at"].dt.strftime("%Y-%m")
@@ -192,9 +194,14 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
 .chart-card{{background:#fff;border-radius:8px;padding:1rem;
   box-shadow:0 1.6px 3.6px rgba(0,0,0,.132);margin-bottom:1rem;}}
 /* ── Guide statement ── */
-.guide-stmt{{background:#F3F2F1;border-left:3px solid var(--pbi-blue);border-radius:0 6px 6px 0;
-  padding:.8rem 1.2rem;margin-bottom:1.2rem;font-size:.88rem;color:#444;font-style:italic;
-  line-height:1.6;}}
+.guide-stmt{{background:linear-gradient(135deg,#EBF3FB 0%,#DDEEFF 100%);
+  border-left:5px solid var(--pbi-blue);border-radius:0 8px 8px 0;
+  padding:1rem 1.4rem;margin-bottom:1.4rem;font-size:.9rem;color:#1a3a5c;
+  line-height:1.65;box-shadow:0 2px 8px rgba(0,120,212,.1);}}
+.guide-stmt::before{{content:'ℹ ';font-weight:700;color:var(--pbi-blue);font-style:normal;}}
+/* ── Chart insight ── */
+.chart-insight{{background:#FFFBF0;border-left:4px solid var(--pbi-warning);border-radius:0 6px 6px 0;
+  padding:.6rem 1rem;margin-top:.6rem;font-size:.78rem;color:#5a4a00;line-height:1.5;}}
 /* ── Toggle buttons ── */
 .toggle-group{{display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.8rem;}}
 .toggle-btn{{border:1px solid var(--pbi-blue);border-radius:4px;padding:.3rem .8rem;
@@ -303,8 +310,14 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
     </div>
     <div class="row g-3" id="overview-kpis"></div>
     <div class="row g-3 mt-1">
-      <div class="col-md-6"><div class="chart-card"><div id="chart-ov-transfers"></div></div></div>
-      <div class="col-md-6"><div class="chart-card"><div id="chart-ov-segment"></div></div></div>
+      <div class="col-md-6"><div class="chart-card">
+        <div id="chart-ov-transfers"></div>
+        <div class="chart-insight">Each bar is the number of cases that required that many agent transfers before closing. A high 3+ bar signals systematic mis-routing — cases being bounced between queues without ever reaching the right team first time.</div>
+      </div></div>
+      <div class="col-md-6"><div class="chart-card">
+        <div id="chart-ov-segment"></div>
+        <div class="chart-insight">Volume split between Retail and Claims. Use the Segment filter above to isolate one line of business and compare transfer behaviour across segments.</div>
+      </div></div>
     </div>
   </div>
 
@@ -318,8 +331,14 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
     </div>
     <div class="row g-3" id="process-kpis"></div>
     <div class="row g-3 mt-1">
-      <div class="col-md-6"><div class="chart-card"><div id="chart-pareto"></div></div></div>
-      <div class="col-md-6"><div class="chart-card"><div id="chart-entry-dist"></div></div></div>
+      <div class="col-md-6"><div class="chart-card">
+        <div id="chart-pareto"></div>
+        <div class="chart-insight">Ranks queues by total days of delay they accumulate across all cases — not just how often they appear. The cumulative % line shows which queues together account for 80% of all routing delay. Fixing the top 2–3 delivers the most impact.</div>
+      </div></div>
+      <div class="col-md-6"><div class="chart-card">
+        <div id="chart-entry-dist"></div>
+        <div class="chart-insight">For each starting queue, shows what % of its cases were resolved first-touch (green) vs transferred at least once (red). Queues with high red bars are mis-routing most of their cases to the wrong team from the outset.</div>
+      </div></div>
     </div>
   </div>
 
@@ -328,12 +347,20 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
     <div class="guide-stmt" id="cost-guide-stmt">Loading...</div>
     <div class="row g-3" id="cost-kpis"></div>
     <div id="cost-insight" class="insight-card"></div>
-    <p style="font-size:.78rem;color:#999;">Click any box to see the individual cases in that group.</p>
     <div class="row g-3">
-      <div class="col-md-6"><div class="chart-card"><div id="chart-aht-box"></div></div></div>
-      <div class="col-md-6"><div class="chart-card"><div id="chart-msg-box"></div></div></div>
+      <div class="col-md-6"><div class="chart-card">
+        <div id="chart-aht-box"></div>
+        <div class="chart-insight">Box = middle 50% of cases (IQR). Line = median. Diamond = mean. Whiskers = typical range. Click any box to drill into the individual cases in that group. If the 3+ box sits much higher than the 0 box, transfers are directly inflating handle time.</div>
+      </div></div>
+      <div class="col-md-6"><div class="chart-card">
+        <div id="chart-msg-box"></div>
+        <div class="chart-insight">Same spread chart for customer message volume. More transfers means more back-and-forth messages — each handoff resets customer expectations and generates additional contact. Click any box to see those cases.</div>
+      </div></div>
     </div>
-    <div class="chart-card mt-2"><div id="chart-multiplier"></div></div>
+    <div class="chart-card mt-2">
+      <div id="chart-multiplier"></div>
+      <div class="chart-insight">Both metrics indexed to 100 at zero transfers (first-touch baseline). A bar at 180 means those cases consumed 80% more resource than a direct resolution. This shows the compounding cost of each additional transfer step.</div>
+    </div>
   </div>
 
   <!-- ── TAB 4: HOURS & TRANSFER ── -->
@@ -347,7 +374,10 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
       <button class="toggle-btn" onclick="setHeatmapView('routing',this)">Routing Wait</button>
       <button class="toggle-btn" onclick="setHeatmapView('inhours',this)">In/Out Hours</button>
     </div>
-    <div class="chart-card"><div id="chart-heatmap"></div></div>
+    <div class="chart-card">
+      <div id="chart-heatmap"></div>
+      <div class="chart-insight">Each cell shows the selected metric as a % of that day's total — so each row always sums to 100%. Darker red = a higher concentration of volume, AHT, messages, or routing delay at that hour relative to the rest of the day. Use this to identify when routing breaks down, not just how much.</div>
+    </div>
   </div>
 
   <!-- ── TAB 5: QUEUE INTELLIGENCE ── -->
@@ -365,11 +395,20 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
     </div>
     <div class="row g-3" id="qi-kpis"></div>
     <div class="row g-3 mt-1">
-      <div class="col-md-6"><div class="chart-card"><div id="chart-qi-inbound"></div></div></div>
-      <div class="col-md-6"><div class="chart-card"><div id="chart-qi-outbound"></div></div></div>
+      <div class="col-md-6"><div class="chart-card">
+        <div id="chart-qi-inbound"></div>
+        <div class="chart-insight">Queues that send the most cases into the selected queue. If the same upstream queue dominates, that's where routing decisions are consistently wrong.</div>
+      </div></div>
+      <div class="col-md-6"><div class="chart-card">
+        <div id="chart-qi-outbound"></div>
+        <div class="chart-insight">Where cases go after leaving this queue. A long tail of varied destinations suggests the queue isn't consistently routing to the right team — it's guessing.</div>
+      </div></div>
     </div>
     <div class="row g-3 mt-1">
-      <div class="col-md-8"><div class="chart-card"><div id="chart-qi-dwell"></div></div></div>
+      <div class="col-md-8"><div class="chart-card">
+        <div id="chart-qi-dwell"></div>
+        <div class="chart-insight">Distribution of how long cases actually sat in this queue (in days). The median line shows typical wait; P90 shows the worst-case experience for 9 in 10 cases. A wide spread means inconsistent handling.</div>
+      </div></div>
       <div class="col-md-4">
         <div class="chart-card" style="height:100%;min-height:300px;">
           <h6 style="font-weight:700;margin-bottom:.5rem;">Top 10 Journey Paths Through Queue <small class="text-muted">(click for cases)</small></h6>
@@ -401,8 +440,14 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
     </div>
     <div class="row g-3" id="journey-kpis"></div>
     <div id="journey-avoidable" class="insight-card" style="display:none;"></div>
-    <div class="chart-card mt-2"><div id="chart-sankey-fwd"></div></div>
-    <div class="chart-card mt-2"><div id="chart-sankey-bwd"></div></div>
+    <div class="chart-card mt-2">
+      <div id="chart-sankey-fwd"></div>
+      <div class="chart-insight">Band width = number of cases flowing along that path. Thicker bands are the dominant routing patterns. Click any band to see the individual cases behind that flow. Queues that appear as large hubs with many outbound paths are routing bottlenecks.</div>
+    </div>
+    <div class="chart-card mt-2">
+      <div id="chart-sankey-bwd"></div>
+      <div class="chart-insight">The reverse view — tracing backwards from the selected queue. Shows which upstream routing decisions led to cases arriving here. Repeated upstream queues suggest a systematic mis-route that could be corrected at source.</div>
+    </div>
     <div class="mt-2">
       <h6 style="font-weight:700;">Top 10 Complete Paths <small class="text-muted">(click row for case detail)</small></h6>
       <div id="journey-path-table"></div>
@@ -665,9 +710,12 @@ async function renderOverview(f) {{
     kpiCard('Loop Rate', (d.loop_rate||0).toFixed(1)+'%', 'kpi-info'),
   ].join('');
 
-  const xfer = await q(`SELECT transfer_bin, COUNT(*) as n FROM cases ${{w}} GROUP BY transfer_bin ORDER BY transfer_bin`);
+  const xfer = await q(`
+    SELECT CASE WHEN transfers=0 THEN '0' WHEN transfers=1 THEN '1' WHEN transfers=2 THEN '2' ELSE '3+' END as bin,
+      COUNT(*) as n
+    FROM cases ${{w}} GROUP BY 1 ORDER BY MIN(transfers)`);
   const binKeys = ['0','1','2','3+'];
-  const counts  = binKeys.map(l => (xfer.find(r=>r.transfer_bin===l)||{{n:0}}).n);
+  const counts  = binKeys.map(l => (xfer.find(r=>r.bin===l)||{{n:0}}).n);
   Plotly.react('chart-ov-transfers', [{{
     type:'bar', x:binKeys, y:counts,
     marker:{{color:['#107C10','#FFB900','#E8820C','#E81123']}},
@@ -798,7 +846,7 @@ let COST_TRACE_BINS = [];   // ordered list of bins that got a trace (for curveN
 async function renderCost(f) {{
   const w = buildWhere(f);
   const stats = await q(`
-    SELECT transfer_bin,
+    SELECT CASE WHEN transfers=0 THEN '0' WHEN transfers=1 THEN '1' WHEN transfers=2 THEN '2' ELSE '3+' END as transfer_bin,
       QUANTILE_CONT(total_active_aht, 0.25) as q1,
       MEDIAN(total_active_aht) as med,
       QUANTILE_CONT(total_active_aht, 0.75) as q3,
@@ -810,7 +858,7 @@ async function renderCost(f) {{
       QUANTILE_CONT(messages, 0.95) as mp95,
       AVG(messages) as mmean
     FROM cases ${{w}}
-    GROUP BY transfer_bin ORDER BY transfer_bin`);
+    GROUP BY 1 ORDER BY MIN(transfers)`);
 
   const baseline_aht = stats.find(r=>r.transfer_bin==='0');
   const high_aht     = stats.find(r=>r.transfer_bin==='3+');
@@ -844,8 +892,10 @@ async function renderCost(f) {{
   const ahtTraces = [], msgTraces = [];
 
   // Store bin cases for click
-  const binCases = await q(`SELECT transfer_bin, CAST(CASE_ID AS VARCHAR) as cid
-    FROM cases ${{w}} AND total_active_aht > 0`);
+  const binCases = await q(`
+    SELECT CASE WHEN transfers=0 THEN '0' WHEN transfers=1 THEN '1' WHEN transfers=2 THEN '2' ELSE '3+' END as transfer_bin,
+      CAST(CASE_ID AS VARCHAR) as cid
+    FROM cases ${{w}}`);
   COST_BIN_CASES = {{}};
   for (const r of binCases) {{
     if (!COST_BIN_CASES[r.transfer_bin]) COST_BIN_CASES[r.transfer_bin] = [];
@@ -919,8 +969,10 @@ async function renderCost(f) {{
   msgDiv.on('plotly_click', data => showCostModal(data, 'Messages'));
 
   // Multiplier effect
-  const esc = await q(`SELECT transfer_bin, MEDIAN(total_active_aht) as aht, MEDIAN(messages) as msg
-    FROM cases ${{w}} GROUP BY transfer_bin ORDER BY transfer_bin`);
+  const esc = await q(`
+    SELECT CASE WHEN transfers=0 THEN '0' WHEN transfers=1 THEN '1' WHEN transfers=2 THEN '2' ELSE '3+' END as transfer_bin,
+      MEDIAN(total_active_aht) as aht, MEDIAN(messages) as msg
+    FROM cases ${{w}} GROUP BY 1 ORDER BY MIN(transfers)`);
   const base_a = esc.find(r=>r.transfer_bin==='0')?.aht || 1;
   const base_m = esc.find(r=>r.transfer_bin==='0')?.msg || 1;
   Plotly.react('chart-multiplier', [
@@ -1084,7 +1136,7 @@ window.renderQueueIntel = async function() {{
       FROM transitions
       WHERE QUEUE_NEW='${{qSafe}}'
         AND CASE_ID IN (SELECT CASE_ID FROM cases c ${{wCases}})`),
-    q(`SELECT SUM(routing_days) as total_routing FROM cases ${{wCases}}`),
+    q(`SELECT SUM(routing_days) as total_routing FROM cases c ${{w}}`),
   ]);
 
   const d  = stats[0] || {{}};
@@ -1434,7 +1486,10 @@ window.renderExplorer = async function(page) {{
   const f = getFilterState();
   let w = buildWhere(f);
   const xfer = document.getElementById('ex-xfer').value;
-  if (xfer !== 'all') w += ` AND transfer_bin='${{xfer}}'`;
+  if      (xfer === '0')  w += ` AND CAST(transfers AS INT) = 0`;
+  else if (xfer === '1')  w += ` AND CAST(transfers AS INT) = 1`;
+  else if (xfer === '2')  w += ` AND CAST(transfers AS INT) = 2`;
+  else if (xfer === '3+') w += ` AND CAST(transfers AS INT) >= 3`;
   EXPLORER_WHERE = w;
   EXPLORER_PAGE = page;
 
@@ -1539,29 +1594,43 @@ window.renderExplorer = async function(page) {{
   // ── Transfer Breakdown (aggregated, no pagination) ───────────────────────
   if (view === 'breakdown') {{
     const rows = await q(`
-      SELECT transfer_bin,
+      SELECT CASE WHEN transfers=0 THEN '0' WHEN transfers=1 THEN '1' WHEN transfers=2 THEN '2' ELSE '3+' END as transfer_bin,
         COUNT(*) as cases,
         MEDIAN(total_active_aht) as med_aht,
         ROUND(AVG(total_active_aht),1) as mean_aht,
         MEDIAN(messages) as med_msg,
         ROUND(AVG(messages),1) as mean_msg,
         ROUND(AVG(routing_days),2) as avg_routing,
-        ROUND(AVG(CAST(loop_flag AS DOUBLE))*100,1) as loop_pct,
+        ROUND(AVG(CASE WHEN loop_flag>0 THEN 1.0 ELSE 0.0 END)*100,1) as loop_pct,
         ROUND(AVG(CASE WHEN inhours=1 THEN 1.0 ELSE 0.0 END)*100,1) as inhours_pct
       FROM cases ${{w}}
-      GROUP BY transfer_bin ORDER BY transfer_bin`);
+      GROUP BY 1 ORDER BY MIN(transfers)`);
 
     const cols = ['transfer_bin','cases','med_aht','mean_aht','med_msg','mean_msg','avg_routing','loop_pct','inhours_pct'];
     const headers = ['Group','Cases','Median AHT (min)','Mean AHT (min)','Median Messages','Mean Messages','Avg Routing Days','Loop Rate %','In-Hours %'];
 
     document.getElementById('ex-count').textContent = rows.length + ' groups';
-    let html = `<div style="overflow-x:auto"><table class="table data-table table-sm">
-      <thead><tr>${{headers.map(h=>`<th>${{h}}</th>`).join('')}}</tr></thead><tbody>`;
+    // Build using DOM to avoid inline onclick quote escaping
+    const brkTbl = document.createElement('table');
+    brkTbl.className = 'table data-table table-sm';
+    brkTbl.innerHTML = `<thead><tr>${{headers.map(h=>`<th>${{h}}</th>`).join('')}}</tr></thead>`;
+    const brkBody = document.createElement('tbody');
     for (const row of rows) {{
-      const cids_q = `SELECT CAST(CASE_ID AS VARCHAR) as cid FROM cases ${{w}} AND transfer_bin='${{row.transfer_bin}}'`;
-      html += `<tr style="cursor:pointer" onclick="(async()=>{{const r=await q('${{cids_q}}');showCaseModal('Group ${{row.transfer_bin}}',r.map(x=>x.cid));}})()" >
-        ${{cols.map(c=>`<td>${{row[c]??''}}</td>`).join('')}}</tr>`;
+      const bin = row.transfer_bin;
+      const transferFilter = bin==='0'?'CAST(transfers AS INT)=0':bin==='1'?'CAST(transfers AS INT)=1':bin==='2'?'CAST(transfers AS INT)=2':'CAST(transfers AS INT)>=3';
+      const tr = document.createElement('tr');
+      tr.style.cursor = 'pointer';
+      tr.innerHTML = cols.map(c=>`<td>${{row[c]??''}}</td>`).join('');
+      tr.addEventListener('click', async () => {{
+        const r = await q(`SELECT CAST(CASE_ID AS VARCHAR) as cid FROM cases ${{w}} AND ${{transferFilter}}`);
+        showCaseModal('Group '+bin, r.map(x=>x.cid));
+      }});
+      brkBody.appendChild(tr);
     }}
+    brkTbl.appendChild(brkBody);
+    const brkContainer = document.getElementById('explorer-table-container');
+    brkContainer.innerHTML = '<div style="overflow-x:auto"></div>';
+    brkContainer.firstChild.appendChild(brkTbl);
     html += '</tbody></table></div>';
     document.getElementById('explorer-table-container').innerHTML = html;
     document.getElementById('explorer-pager').innerHTML = '';
