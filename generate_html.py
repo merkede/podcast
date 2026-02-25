@@ -368,6 +368,15 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
       <div class="col-md-6"><div class="chart-card"><div id="chart-qi-inbound"></div></div></div>
       <div class="col-md-6"><div class="chart-card"><div id="chart-qi-outbound"></div></div></div>
     </div>
+    <div class="row g-3 mt-1">
+      <div class="col-md-8"><div class="chart-card"><div id="chart-qi-dwell"></div></div></div>
+      <div class="col-md-4">
+        <div class="chart-card" style="height:100%;min-height:300px;">
+          <h6 style="font-weight:700;margin-bottom:.5rem;">Top 10 Journey Paths Through Queue <small class="text-muted">(click for cases)</small></h6>
+          <div id="qi-paths-table" style="font-size:.78rem;overflow-y:auto;max-height:340px;"></div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- ── TAB 6: JOURNEY PATHWAYS ── -->
@@ -407,8 +416,15 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
       Browse case-level summaries, filter by transfer count, then download the CSV.
       No black boxes.
     </div>
-    <div class="d-flex gap-2 align-items-center mb-2">
-      <div class="filter-label mb-0">Transfer Count:</div>
+    <div class="d-flex gap-2 align-items-center mb-2 flex-wrap">
+      <div class="filter-label mb-0">View:</div>
+      <select id="ex-view" class="form-select form-select-sm" style="width:auto;" onchange="renderExplorer()">
+        <option value="cases" selected>Case List</option>
+        <option value="journeys">Queue Journey (Raw)</option>
+        <option value="breakdown">Transfer Breakdown</option>
+        <option value="performance">Queue Performance</option>
+      </select>
+      <div class="filter-label mb-0 ms-2">Transfer Count:</div>
       <select id="ex-xfer" class="form-select form-select-sm" style="width:auto;" onchange="renderExplorer()">
         <option value="all" selected>All</option>
         <option value="0">0 — Direct Resolution</option>
@@ -854,19 +870,42 @@ async function renderCost(f) {{
     }});
   }}
 
-  const boxLayout = (title, ytitle) => ({{
-    title, height:400, showlegend:false,
+  // Build per-box annotations: "Median: X\nMean: X" above each box
+  const ahtAnnotations = [], msgAnnotations = [];
+  let binIdx = 0;
+  for (const bin of bins) {{
+    const row = stats.find(r=>r.transfer_bin===bin);
+    if (!row) continue;
+    const label = bin + (bin==='1'?' transfer':' transfers');
+    ahtAnnotations.push({{
+      x: label, y: row.q3 + (row.q3 - row.q1) * 0.3,
+      text: `Med: ${{Math.round(row.med)}}<br>Mean: ${{Math.round(row.mean_val)}}`,
+      showarrow: false, font: {{size:9, color:'#444'}},
+      align:'center', bgcolor:'rgba(255,255,255,0.7)', borderpad:2,
+    }});
+    msgAnnotations.push({{
+      x: label, y: row.mq3 + (row.mq3 - row.mq1) * 0.3,
+      text: `Med: ${{Math.round(row.mmed)}}<br>Mean: ${{Math.round(row.mmean)}}`,
+      showarrow: false, font: {{size:9, color:'#444'}},
+      align:'center', bgcolor:'rgba(255,255,255,0.7)', borderpad:2,
+    }});
+    binIdx++;
+  }}
+
+  const boxLayout = (title, ytitle, annots) => ({{
+    title, height:420, showlegend:false,
     paper_bgcolor:'transparent', plot_bgcolor:'transparent',
     yaxis:{{title:ytitle, showgrid:true, gridcolor:'#EDEBE9'}},
     xaxis:{{showgrid:false}}, margin:{{t:50,l:60,r:30,b:40}},
+    annotations: annots || [],
   }});
 
   const ahtDiv = document.getElementById('chart-aht-box');
-  Plotly.react(ahtDiv, ahtTraces, boxLayout('Handle Time by Transfer Count','AHT (min)'), {{responsive:true}});
+  Plotly.react(ahtDiv, ahtTraces, boxLayout('Handle Time by Transfer Count','AHT (min)', ahtAnnotations), {{responsive:true}});
   ahtDiv.on('plotly_click', data => showCostModal(data, 'AHT'));
 
   const msgDiv = document.getElementById('chart-msg-box');
-  Plotly.react(msgDiv, msgTraces, boxLayout('Customer Messages by Transfer Count','Messages'), {{responsive:true}});
+  Plotly.react(msgDiv, msgTraces, boxLayout('Customer Messages by Transfer Count','Messages', msgAnnotations), {{responsive:true}});
   msgDiv.on('plotly_click', data => showCostModal(data, 'Messages'));
 
   // Multiplier effect
@@ -1017,28 +1056,45 @@ window.renderQueueIntel = async function() {{
   const w = buildWhere(f, 'c');
   const selQ = document.getElementById('qi-queue-select').value;
   if (!selQ) return;
+  const qSafe = selQ.replace(/'/g, "''");
+  const wCases = buildWhere(f, 'c');
 
-  const stats = await q(`SELECT COUNT(*) as n,
-    AVG(CASE WHEN transfers=0 THEN 1.0 ELSE 0.0 END)*100 as drr,
-    AVG(transfers) as avg_xfer, MEDIAN(total_active_aht) as med_aht,
-    MEDIAN(routing_days) as med_routing
-    FROM cases c ${{w}} AND CAST(c.CASE_ID AS VARCHAR) IN (
-      SELECT CAST(CASE_ID AS VARCHAR) FROM transitions WHERE QUEUE_NEW='${{selQ.replace(/'/g,"''")}}'
-    )`);
-  const d = stats[0] || {{}};
+  // Main case-level stats + dwell from transitions
+  const [stats, dwellStats, totalRoutingRow] = await Promise.all([
+    q(`SELECT COUNT(*) as n,
+        AVG(CASE WHEN c.entry_queue='${{qSafe}}' AND c.transfers=0 THEN 1.0 ELSE 0.0 END)*100 as ftr_as_entry_pct,
+        SUM(CASE WHEN c.entry_queue='${{qSafe}}' THEN 1 ELSE 0 END) as entry_count
+      FROM cases c ${{w}} AND CAST(c.CASE_ID AS VARCHAR) IN (
+        SELECT CAST(CASE_ID AS VARCHAR) FROM transitions WHERE QUEUE_NEW='${{qSafe}}'
+      )`),
+    q(`SELECT COUNT(*) as n,
+        MEDIAN(DAYS_IN_QUEUE) as med_dwell,
+        QUANTILE_CONT(DAYS_IN_QUEUE, 0.9) as p90_dwell,
+        SUM(DAYS_IN_QUEUE) as total_dwell
+      FROM transitions
+      WHERE QUEUE_NEW='${{qSafe}}'
+        AND CASE_ID IN (SELECT CASE_ID FROM cases c ${{wCases}})`),
+    q(`SELECT SUM(routing_days) as total_routing FROM cases ${{wCases}}`),
+  ]);
+
+  const d  = stats[0] || {{}};
+  const dw = dwellStats[0] || {{}};
+  const totalRouting = totalRoutingRow[0]?.total_routing || 1;
+  const pctDelay = dw.total_dwell ? (dw.total_dwell / totalRouting * 100) : 0;
+
   document.getElementById('qi-kpis').innerHTML = [
     kpiCard('Cases Through Queue', (d.n||0).toLocaleString(), 'kpi-primary'),
-    kpiCard('Direct Resolution Rate', (d.drr||0).toFixed(1)+'%', 'kpi-success'),
-    kpiCard('Avg Transfers', (d.avg_xfer||0).toFixed(2), 'kpi-warning'),
-    kpiCard('Median AHT', Math.round(d.med_aht||0)+' min', 'kpi-info'),
+    kpiCard('Median Dwell Days', (dw.med_dwell||0).toFixed(1), 'kpi-info'),
+    kpiCard('P90 Dwell Days', (dw.p90_dwell||0).toFixed(1), 'kpi-warning'),
+    kpiCard('FTR as Entry Queue', (d.ftr_as_entry_pct||0).toFixed(1)+'%', 'kpi-success'),
+    kpiCard('% of Total Routing Delay', pctDelay.toFixed(1)+'%', 'kpi-danger'),
   ].join('');
 
-  const wCases = buildWhere(f, 'c');
   const inbound = await q(`
     SELECT prev.QUEUE_NEW as from_queue, COUNT(*) as n
     FROM transitions t
     JOIN transitions prev ON t.CASE_ID=prev.CASE_ID AND t.QUEUE_ORDER=prev.QUEUE_ORDER+1
-    WHERE t.QUEUE_NEW='${{selQ.replace(/'/g,"''")}}'
+    WHERE t.QUEUE_NEW='${{qSafe}}'
       AND t.CASE_ID IN (SELECT CASE_ID FROM cases c ${{wCases}})
     GROUP BY prev.QUEUE_NEW ORDER BY n DESC LIMIT 12`);
 
@@ -1046,7 +1102,7 @@ window.renderQueueIntel = async function() {{
     SELECT nxt.QUEUE_NEW as to_queue, COUNT(*) as n
     FROM transitions t
     JOIN transitions nxt ON t.CASE_ID=nxt.CASE_ID AND nxt.QUEUE_ORDER=t.QUEUE_ORDER+1
-    WHERE t.QUEUE_NEW='${{selQ.replace(/'/g,"''")}}'
+    WHERE t.QUEUE_NEW='${{qSafe}}'
       AND t.CASE_ID IN (SELECT CASE_ID FROM cases c ${{wCases}})
     GROUP BY nxt.QUEUE_NEW ORDER BY n DESC LIMIT 12`);
 
@@ -1073,6 +1129,67 @@ window.renderQueueIntel = async function() {{
     yaxis:{{autorange:'reversed',tickfont:{{size:9}}}},
     xaxis:{{showgrid:true,gridcolor:'#EDEBE9'}},
   }}, {{responsive:true}});
+
+  // Dwell histogram
+  const dwellRows = await q(`
+    SELECT CAST(DAYS_IN_QUEUE AS DOUBLE) as d
+    FROM transitions
+    WHERE QUEUE_NEW='${{qSafe}}'
+      AND CASE_ID IN (SELECT CASE_ID FROM cases c ${{wCases}})
+      AND DAYS_IN_QUEUE IS NOT NULL`);
+  const dwellVals = dwellRows.map(r=>r.d);
+  const medDwell = dw.med_dwell || 0;
+  const p90Dwell = dw.p90_dwell || 0;
+  Plotly.react('chart-qi-dwell', [
+    {{type:'histogram', x:dwellVals, nbinsx:20,
+      marker:{{color:COLORS.primary+'99', line:{{color:COLORS.primary, width:1}}}},
+      name:'Cases'}},
+  ], {{
+    title:`Dwell Time Distribution in ${{selQ}} (days)`, height:320,
+    margin:{{t:50,l:55,r:20,b:45}},
+    paper_bgcolor:'transparent', plot_bgcolor:'transparent',
+    xaxis:{{title:'Days in Queue', showgrid:true, gridcolor:'#EDEBE9'}},
+    yaxis:{{title:'Cases', showgrid:true, gridcolor:'#EDEBE9'}},
+    shapes:[
+      {{type:'line', x0:medDwell, x1:medDwell, y0:0, y1:1, yref:'paper',
+        line:{{color:'#107C10', width:2, dash:'dash'}}}},
+      {{type:'line', x0:p90Dwell, x1:p90Dwell, y0:0, y1:1, yref:'paper',
+        line:{{color:'#D83B01', width:2, dash:'dot'}}}},
+    ],
+    annotations:[
+      {{x:medDwell, y:0.95, yref:'paper', text:`Median: ${{medDwell.toFixed(1)}}d`,
+        showarrow:false, font:{{size:10, color:'#107C10'}}, xanchor:'left', xshift:4}},
+      {{x:p90Dwell, y:0.82, yref:'paper', text:`P90: ${{p90Dwell.toFixed(1)}}d`,
+        showarrow:false, font:{{size:10, color:'#D83B01'}}, xanchor:'left', xshift:4}},
+    ],
+  }}, {{responsive:true}});
+
+  // Top 10 journey paths through selected queue
+  const pathRows = await q(`
+    WITH case_paths AS (
+      SELECT CASE_ID,
+        STRING_AGG(QUEUE_NEW, ' → ' ORDER BY QUEUE_ORDER) as full_path
+      FROM transitions
+      WHERE CASE_ID IN (
+        SELECT DISTINCT CASE_ID FROM transitions WHERE QUEUE_NEW='${{qSafe}}'
+          AND CASE_ID IN (SELECT CASE_ID FROM cases c ${{wCases}})
+      )
+      GROUP BY CASE_ID
+    )
+    SELECT full_path, COUNT(*) as n,
+      LIST(CAST(CASE_ID AS VARCHAR)) as cids
+    FROM case_paths
+    GROUP BY full_path ORDER BY n DESC LIMIT 10`);
+
+  let pathHtml = '<table class="table table-sm" style="font-size:.75rem;"><thead><tr><th>Path</th><th style="text-align:right">Cases</th></tr></thead><tbody>';
+  for (const row of pathRows) {{
+    const cidArr = row.cids || [];
+    pathHtml += `<tr style="cursor:pointer" onclick="showCaseModal('Path: ${{row.full_path.replace(/'/g,\\"\\\\'\\")}}',${{JSON.stringify(cidArr.map(String))}})">
+      <td style="word-break:break-word;">${{row.full_path}}</td>
+      <td style="text-align:right;font-weight:600;">${{row.n}}</td></tr>`;
+  }}
+  pathHtml += '</tbody></table>';
+  document.getElementById('qi-paths-table').innerHTML = pathRows.length ? pathHtml : '<p class="text-muted">No data.</p>';
 }};
 
 // ═══════════════════════════════════════════════════════
@@ -1280,47 +1397,159 @@ window.renderExplorer = async function(page) {{
   EXPLORER_WHERE = w;
   EXPLORER_PAGE = page;
 
-  const countRow = await q(`SELECT COUNT(*) as n FROM cases ${{w}}`);
-  EXPLORER_TOTAL = countRow[0]?.n || 0;
-  document.getElementById('ex-count').textContent = EXPLORER_TOTAL.toLocaleString() + ' cases';
+  const view = document.getElementById('ex-view').value;
 
-  const offset = page * PAGE_SIZE;
-  const rows = await q(`
-    SELECT CAST(CASE_ID AS VARCHAR) as case_id, entry_queue, final_queue,
-      CAST(transfers AS INT) as transfers,
-      CAST(transfer_bin AS VARCHAR) as transfer_bin,
-      ROUND(total_active_aht, 0) as aht_min,
-      ROUND(routing_days, 1) as routing_days,
-      CAST(messages AS INT) as messages,
-      segment,
-      CAST(inhours AS INT) as inhours,
-      CAST(loop_flag AS INT) as loop_flag
-    FROM cases ${{w}} ORDER BY transfers DESC, total_active_aht DESC
-    LIMIT ${{PAGE_SIZE}} OFFSET ${{offset}}`);
+  // ── Case List (default, paginated) ──────────────────────────────────────
+  if (view === 'cases') {{
+    const countRow = await q(`SELECT COUNT(*) as n FROM cases ${{w}}`);
+    EXPLORER_TOTAL = countRow[0]?.n || 0;
+    document.getElementById('ex-count').textContent = EXPLORER_TOTAL.toLocaleString() + ' cases';
 
-  const cols = ['case_id','entry_queue','final_queue','transfers','transfer_bin',
-                'aht_min','routing_days','messages','segment','inhours','loop_flag'];
-  const headers = ['Case ID','Entry Queue','Final Queue','Transfers','Group',
-                   'AHT (min)','Routing Days','Messages','Segment','In-Hours','Loop'];
+    const offset = page * PAGE_SIZE;
+    const rows = await q(`
+      SELECT CAST(CASE_ID AS VARCHAR) as case_id, entry_queue, final_queue,
+        CAST(transfers AS INT) as transfers,
+        CAST(transfer_bin AS VARCHAR) as transfer_bin,
+        ROUND(total_active_aht, 0) as aht_min,
+        ROUND(routing_days, 1) as routing_days,
+        CAST(messages AS INT) as messages,
+        segment,
+        CAST(inhours AS INT) as inhours,
+        CAST(loop_flag AS INT) as loop_flag
+      FROM cases ${{w}} ORDER BY transfers DESC, total_active_aht DESC
+      LIMIT ${{PAGE_SIZE}} OFFSET ${{offset}}`);
 
-  const totalPages = Math.ceil(EXPLORER_TOTAL / PAGE_SIZE);
-  let html = `<div style="overflow-x:auto"><table class="table data-table table-sm">
-    <thead><tr>${{headers.map(h=>`<th>${{h}}</th>`).join('')}}</tr></thead><tbody>`;
-  for (const row of rows) {{
-    html += `<tr onclick="showCaseModal('Case ${{row.case_id}}',${{JSON.stringify([String(row.case_id)])}})">
-      ${{cols.map(c=>`<td>${{row[c]??''}}</td>`).join('')}}</tr>`;
+    const cols = ['case_id','entry_queue','final_queue','transfers','transfer_bin',
+                  'aht_min','routing_days','messages','segment','inhours','loop_flag'];
+    const headers = ['Case ID','Entry Queue','Final Queue','Transfers','Group',
+                     'AHT (min)','Routing Days','Messages','Segment','In-Hours','Loop'];
+
+    const totalPages = Math.ceil(EXPLORER_TOTAL / PAGE_SIZE);
+    let html = `<div style="overflow-x:auto"><table class="table data-table table-sm">
+      <thead><tr>${{headers.map(h=>`<th>${{h}}</th>`).join('')}}</tr></thead><tbody>`;
+    for (const row of rows) {{
+      html += `<tr onclick="showCaseModal('Case ${{row.case_id}}',${{JSON.stringify([String(row.case_id)])}})">
+        ${{cols.map(c=>`<td>${{row[c]??''}}</td>`).join('')}}</tr>`;
+    }}
+    html += '</tbody></table></div>';
+    document.getElementById('explorer-table-container').innerHTML = html;
+
+    let pagerHtml = `<button onclick="window.renderExplorer(${{EXPLORER_PAGE-1}})" ${{EXPLORER_PAGE===0?'disabled':''}}>‹</button>`;
+    const sp = Math.max(0, EXPLORER_PAGE-2), ep = Math.min(totalPages, sp+5);
+    for (let i=sp; i<ep; i++) {{
+      pagerHtml += `<button class="${{i===EXPLORER_PAGE?'active':''}}" onclick="window.renderExplorer(${{i}})">${{i+1}}</button>`;
+    }}
+    pagerHtml += `<button onclick="window.renderExplorer(${{EXPLORER_PAGE+1}})" ${{EXPLORER_PAGE>=totalPages-1?'disabled':''}}>›</button>`;
+    pagerHtml += ` <span style="font-size:.75rem;color:#888">Page ${{EXPLORER_PAGE+1}} of ${{totalPages}} (${{EXPLORER_TOTAL.toLocaleString()}} total)</span>`;
+    document.getElementById('explorer-pager').innerHTML = pagerHtml;
+    return;
   }}
-  html += '</tbody></table></div>';
-  document.getElementById('explorer-table-container').innerHTML = html;
 
-  let pagerHtml = `<button onclick="window.renderExplorer(${{EXPLORER_PAGE-1}})" ${{EXPLORER_PAGE===0?'disabled':''}}>‹</button>`;
-  const sp = Math.max(0, EXPLORER_PAGE-2), ep = Math.min(totalPages, sp+5);
-  for (let i=sp; i<ep; i++) {{
-    pagerHtml += `<button class="${{i===EXPLORER_PAGE?'active':''}}" onclick="window.renderExplorer(${{i}})">${{i+1}}</button>`;
+  // ── Queue Journey Raw ────────────────────────────────────────────────────
+  if (view === 'journeys') {{
+    const countRow = await q(`SELECT COUNT(*) as n FROM transitions
+      WHERE CASE_ID IN (SELECT CASE_ID FROM cases ${{w}})`);
+    EXPLORER_TOTAL = countRow[0]?.n || 0;
+    document.getElementById('ex-count').textContent = EXPLORER_TOTAL.toLocaleString() + ' transitions';
+
+    const offset = page * PAGE_SIZE;
+    const rows = await q(`
+      SELECT CAST(t.CASE_ID AS VARCHAR) as case_id,
+        CAST(t.QUEUE_ORDER AS INT) as queue_order,
+        t.QUEUE_NEW as queue,
+        ROUND(t.DAYS_IN_QUEUE, 2) as days_in_queue,
+        c.entry_queue, c.final_queue,
+        CAST(c.transfers AS INT) as transfers,
+        c.segment
+      FROM transitions t
+      JOIN cases c ON t.CASE_ID = c.CASE_ID
+      WHERE c.CASE_ID IN (SELECT CASE_ID FROM cases ${{w}})
+      ORDER BY t.CASE_ID, t.QUEUE_ORDER
+      LIMIT ${{PAGE_SIZE}} OFFSET ${{offset}}`);
+
+    const cols = ['case_id','queue_order','queue','days_in_queue','entry_queue','final_queue','transfers','segment'];
+    const headers = ['Case ID','Step','Queue','Days in Queue','Entry Queue','Final Queue','Transfers','Segment'];
+    const totalPages = Math.ceil(EXPLORER_TOTAL / PAGE_SIZE);
+    let html = `<div style="overflow-x:auto"><table class="table data-table table-sm">
+      <thead><tr>${{headers.map(h=>`<th>${{h}}</th>`).join('')}}</tr></thead><tbody>`;
+    for (const row of rows) {{
+      html += `<tr onclick="showCaseModal('Case ${{row.case_id}}',${{JSON.stringify([String(row.case_id)])}})">
+        ${{cols.map(c=>`<td>${{row[c]??''}}</td>`).join('')}}</tr>`;
+    }}
+    html += '</tbody></table></div>';
+    document.getElementById('explorer-table-container').innerHTML = html;
+
+    let pagerHtml = `<button onclick="window.renderExplorer(${{EXPLORER_PAGE-1}})" ${{EXPLORER_PAGE===0?'disabled':''}}>‹</button>`;
+    const sp = Math.max(0, EXPLORER_PAGE-2), ep = Math.min(totalPages, sp+5);
+    for (let i=sp; i<ep; i++) {{
+      pagerHtml += `<button class="${{i===EXPLORER_PAGE?'active':''}}" onclick="window.renderExplorer(${{i}})">${{i+1}}</button>`;
+    }}
+    pagerHtml += `<button onclick="window.renderExplorer(${{EXPLORER_PAGE+1}})" ${{EXPLORER_PAGE>=totalPages-1?'disabled':''}}>›</button>`;
+    pagerHtml += ` <span style="font-size:.75rem;color:#888">Page ${{EXPLORER_PAGE+1}} of ${{totalPages}} (${{EXPLORER_TOTAL.toLocaleString()}} total)</span>`;
+    document.getElementById('explorer-pager').innerHTML = pagerHtml;
+    return;
   }}
-  pagerHtml += `<button onclick="window.renderExplorer(${{EXPLORER_PAGE+1}})" ${{EXPLORER_PAGE>=totalPages-1?'disabled':''}}>›</button>`;
-  pagerHtml += ` <span style="font-size:.75rem;color:#888">Page ${{EXPLORER_PAGE+1}} of ${{totalPages}} (${{EXPLORER_TOTAL.toLocaleString()}} total)</span>`;
-  document.getElementById('explorer-pager').innerHTML = pagerHtml;
+
+  // ── Transfer Breakdown (aggregated, no pagination) ───────────────────────
+  if (view === 'breakdown') {{
+    const rows = await q(`
+      SELECT transfer_bin,
+        COUNT(*) as cases,
+        MEDIAN(total_active_aht) as med_aht,
+        ROUND(AVG(total_active_aht),1) as mean_aht,
+        MEDIAN(messages) as med_msg,
+        ROUND(AVG(messages),1) as mean_msg,
+        ROUND(AVG(routing_days),2) as avg_routing,
+        ROUND(AVG(CAST(loop_flag AS DOUBLE))*100,1) as loop_pct,
+        ROUND(AVG(CASE WHEN inhours=1 THEN 1.0 ELSE 0.0 END)*100,1) as inhours_pct
+      FROM cases ${{w}}
+      GROUP BY transfer_bin ORDER BY transfer_bin`);
+
+    const cols = ['transfer_bin','cases','med_aht','mean_aht','med_msg','mean_msg','avg_routing','loop_pct','inhours_pct'];
+    const headers = ['Group','Cases','Median AHT (min)','Mean AHT (min)','Median Messages','Mean Messages','Avg Routing Days','Loop Rate %','In-Hours %'];
+
+    document.getElementById('ex-count').textContent = rows.length + ' groups';
+    let html = `<div style="overflow-x:auto"><table class="table data-table table-sm">
+      <thead><tr>${{headers.map(h=>`<th>${{h}}</th>`).join('')}}</tr></thead><tbody>`;
+    for (const row of rows) {{
+      const cids_q = `SELECT CAST(CASE_ID AS VARCHAR) as cid FROM cases ${{w}} AND transfer_bin='${{row.transfer_bin}}'`;
+      html += `<tr style="cursor:pointer" onclick="(async()=>{{const r=await q('${{cids_q}}');showCaseModal('Group ${{row.transfer_bin}}',r.map(x=>x.cid));}})()" >
+        ${{cols.map(c=>`<td>${{row[c]??''}}</td>`).join('')}}</tr>`;
+    }}
+    html += '</tbody></table></div>';
+    document.getElementById('explorer-table-container').innerHTML = html;
+    document.getElementById('explorer-pager').innerHTML = '';
+    return;
+  }}
+
+  // ── Queue Performance (aggregated by entry queue) ────────────────────────
+  if (view === 'performance') {{
+    const rows = await q(`
+      SELECT entry_queue,
+        COUNT(*) as cases,
+        ROUND(AVG(CASE WHEN transfers=0 THEN 100.0 ELSE 0.0 END),1) as ftr_pct,
+        ROUND(AVG(transfers),2) as avg_xfer,
+        MEDIAN(total_active_aht) as med_aht,
+        MEDIAN(routing_days) as med_routing,
+        ROUND(AVG(CAST(loop_flag AS DOUBLE))*100,1) as loop_pct,
+        ROUND(AVG(CASE WHEN inhours=1 THEN 1.0 ELSE 0.0 END)*100,1) as inhours_pct
+      FROM cases ${{w}}
+      GROUP BY entry_queue ORDER BY cases DESC`);
+
+    const cols = ['entry_queue','cases','ftr_pct','avg_xfer','med_aht','med_routing','loop_pct','inhours_pct'];
+    const headers = ['Entry Queue','Cases','FTR %','Avg Transfers','Median AHT (min)','Median Routing Days','Loop Rate %','In-Hours %'];
+
+    document.getElementById('ex-count').textContent = rows.length + ' queues';
+    let html = `<div style="overflow-x:auto"><table class="table data-table table-sm">
+      <thead><tr>${{headers.map(h=>`<th>${{h}}</th>`).join('')}}</tr></thead><tbody>`;
+    for (const row of rows) {{
+      html += `<tr>
+        ${{cols.map(c=>`<td>${{row[c]??''}}</td>`).join('')}}</tr>`;
+    }}
+    html += '</tbody></table></div>';
+    document.getElementById('explorer-table-container').innerHTML = html;
+    document.getElementById('explorer-pager').innerHTML = '';
+  }}
 }};
 
 window.downloadCSV = async function() {{
