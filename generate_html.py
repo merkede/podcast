@@ -170,13 +170,17 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
   padding:.3rem .5rem;width:100%;}}
 .filter-panel select[multiple]{{height:80px;}}
 /* ── Tabs ── */
-.tab-nav{{background:#fff;border-bottom:2px solid #E1DFDD;padding:0 1rem;
-  position:sticky;top:53px;z-index:999;display:flex;gap:0;overflow-x:auto;}}
-.tab-btn{{border:none;background:none;padding:.65rem 1.1rem;font-size:.82rem;font-weight:600;
-  color:#605E5C;cursor:pointer;border-bottom:3px solid transparent;white-space:nowrap;
-  transition:all .15s;}}
-.tab-btn.active{{color:var(--pbi-blue);border-bottom-color:var(--pbi-blue);}}
-.tab-btn:hover:not(.active){{color:#201F1E;background:#F3F2F1;}}
+.tab-nav{{background:#1a1a2e;padding:.55rem 1rem;
+  position:sticky;top:53px;z-index:999;display:flex;gap:.45rem;overflow-x:auto;
+  align-items:center;box-shadow:0 2px 6px rgba(0,0,0,.3);}}
+.tab-btn{{border:2px solid rgba(255,255,255,.18);background:rgba(255,255,255,.07);
+  color:rgba(255,255,255,.75);padding:.42rem 0;font-size:.78rem;font-weight:700;
+  letter-spacing:.3px;cursor:pointer;border-radius:6px;white-space:nowrap;
+  transition:all .18s;flex:1;min-width:0;text-align:center;}}
+.tab-btn:hover:not(.active){{background:rgba(255,255,255,.15);color:#fff;
+  border-color:rgba(255,255,255,.4);}}
+.tab-btn.active{{background:var(--pbi-blue);color:#fff;border-color:var(--pbi-blue);
+  box-shadow:0 2px 8px rgba(0,120,212,.5);}}
 /* ── Content ── */
 .content-area{{padding:1.2rem 1.4rem;max-width:1400px;margin:0 auto;}}
 .tab-panel{{display:none;}}.tab-panel.active{{display:block;}}
