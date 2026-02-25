@@ -71,7 +71,7 @@ def prepare_data(df):
     case["message_intensity"] = case["messages"] / (case["total_active_aht"].fillna(0) + 1)
     case["ftr"] = (case["transfers"].fillna(0) == 0).astype(int)
     case["transfer_bin"] = pd.cut(
-        case["transfers"].fillna(0), bins=[-0.1, 0, 1, 2, 100], labels=["0", "1", "2", "3+"]
+        case["transfers"].fillna(0), bins=[-0.1, 0, 1, 2, float("inf")], labels=["0", "1", "2", "3+"]
     )
     eq = case["entry_queue"].fillna("")
     case["segment"] = np.where(
@@ -666,18 +666,25 @@ async function renderOverview(f) {{
   ].join('');
 
   const xfer = await q(`SELECT transfer_bin, COUNT(*) as n FROM cases ${{w}} GROUP BY transfer_bin ORDER BY transfer_bin`);
-  const binKeys  = ['0','1','2','3+'];
-  const binTicks = ['0 transfers','1 transfer','2 transfers','3+ transfers (incl. 4, 5…)'];
-  const counts = binKeys.map(l => (xfer.find(r=>r.transfer_bin===l)||{{n:0}}).n);
+  const binKeys = ['0','1','2','3+'];
+  const counts  = binKeys.map(l => (xfer.find(r=>r.transfer_bin===l)||{{n:0}}).n);
   Plotly.react('chart-ov-transfers', [{{
-    type:'bar', x:binTicks, y:counts,
+    type:'bar', x:binKeys, y:counts,
     marker:{{color:['#107C10','#FFB900','#E8820C','#E81123']}},
     text:counts.map(v=>v.toLocaleString()), textposition:'outside',
   }}], {{
-    title:'Cases by Transfer Count', height:320, margin:{{t:50,l:50,r:20,b:60}},
+    title:'Cases by Transfer Count', height:320, margin:{{t:50,l:50,r:20,b:50}},
     paper_bgcolor:'transparent', plot_bgcolor:'transparent',
-    xaxis:{{showgrid:false, tickfont:{{size:10}}}},
+    xaxis:{{
+      showgrid:false, tickfont:{{size:12}},
+      tickvals:binKeys, ticktext:['0','1','2','3+'],
+    }},
     yaxis:{{showgrid:true,gridcolor:'#EDEBE9'}},
+    annotations:[{{
+      xref:'paper', yref:'paper', x:1, y:-0.18,
+      text:'<i>3+ includes all cases with 3 or more transfers (4, 5, 6…)</i>',
+      showarrow:false, font:{{size:9, color:'#888'}}, xanchor:'right',
+    }}],
   }}, {{responsive:true}});
 
   const seg = await q(`SELECT segment, COUNT(*) as n FROM cases ${{w}} GROUP BY segment`);
