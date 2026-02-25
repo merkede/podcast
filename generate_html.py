@@ -116,7 +116,7 @@ def export_cases(case_df, path):
 def export_transitions(df_raw, path):
     cols = [c for c in ["CASE_ID", "QUEUE_NEW", "QUEUE_ORDER", "DAYS_IN_QUEUE"] if c in df_raw.columns]
     df = df_raw[cols].copy()
-    df["CASE_ID"] = df["CASE_ID"].astype(str)
+    df["CASE_ID"] = df["CASE_ID"].astype(str).str.replace(r"\.0$", "", regex=True)
     pq.write_table(pa.Table.from_pandas(df, preserve_index=False), path, compression="snappy")
     mb = path.stat().st_size / 1024 / 1024
     print(f"  transitions.parquet{len(df):>10,} rows  {mb:.1f} MB")
@@ -781,6 +781,10 @@ async function renderProcess(f) {{
       AND t.CASE_ID IN (SELECT CASE_ID FROM cases c ${{where_cases}})
     GROUP BY t.QUEUE_NEW ORDER BY delay_days DESC LIMIT 15`);
   const totalDelay = pareto.reduce((s,r)=>s+r.delay_days,0);
+  if (!pareto.length || totalDelay === 0) {{
+    Plotly.react('chart-pareto', [], {{title:'No intermediary queue data for this filter',height:420,
+      paper_bgcolor:'transparent',plot_bgcolor:'transparent'}}, {{responsive:true}});
+  }} else {{
   let cumPct = 0;
   const cumPcts = pareto.map(r => {{ cumPct += r.delay_days/totalDelay*100; return Math.round(cumPct*10)/10; }});
   Plotly.react('chart-pareto', [
@@ -805,6 +809,7 @@ async function renderProcess(f) {{
     yaxis2:{{title:'Cumulative %',overlaying:'y',side:'right',range:[0,105],showgrid:false}},
     legend:{{orientation:'h',y:1.1}}, showlegend:true,
   }}, {{responsive:true}});
+  }} // end else (pareto has data)
 
   const entry = await q(`
     SELECT entry_queue,
@@ -891,7 +896,6 @@ async function renderCost(f) {{
 
   // Build box traces
   const bins = ['0','1','2','3+'];
-  const binLabels = ['0 transfers','1 transfer','2 transfers','3+ transfers'];
   const ahtTraces = [], msgTraces = [];
 
   // Store bin cases for click
@@ -935,7 +939,6 @@ async function renderCost(f) {{
 
   // Build per-box annotations: Median and Mean values above each box
   const ahtAnnotations = [], msgAnnotations = [];
-  let binIdx = 0;
   for (const bin of bins) {{
     const row = stats.find(r=>r.transfer_bin===bin);
     if (!row) continue;
@@ -952,7 +955,6 @@ async function renderCost(f) {{
       showarrow: false, font: {{size:9, color:'#444'}},
       align:'center', bgcolor:'rgba(255,255,255,0.7)', borderpad:2,
     }});
-    binIdx++;
   }}
 
   const boxLayout = (title, ytitle, annots) => ({{
@@ -1122,7 +1124,6 @@ window.renderQueueIntel = async function() {{
   const selQ = document.getElementById('qi-queue-select').value;
   if (!selQ) return;
   const qSafe = selQ.replace(/'/g, "''");
-  const wCases = buildWhere(f, 'c');
 
   // Main case-level stats + dwell from transitions
   const [stats, dwellStats, totalRoutingRow] = await Promise.all([
@@ -1138,7 +1139,7 @@ window.renderQueueIntel = async function() {{
         SUM(DAYS_IN_QUEUE) as total_dwell
       FROM transitions
       WHERE QUEUE_NEW='${{qSafe}}'
-        AND CASE_ID IN (SELECT CASE_ID FROM cases c ${{wCases}})`),
+        AND CASE_ID IN (SELECT CASE_ID FROM cases c ${{w}})`),
     q(`SELECT SUM(routing_days) as total_routing FROM cases c ${{w}}`),
   ]);
 
@@ -1160,7 +1161,7 @@ window.renderQueueIntel = async function() {{
     FROM transitions t
     JOIN transitions prev ON t.CASE_ID=prev.CASE_ID AND t.QUEUE_ORDER=prev.QUEUE_ORDER+1
     WHERE t.QUEUE_NEW='${{qSafe}}'
-      AND t.CASE_ID IN (SELECT CASE_ID FROM cases c ${{wCases}})
+      AND t.CASE_ID IN (SELECT CASE_ID FROM cases c ${{w}})
     GROUP BY prev.QUEUE_NEW ORDER BY n DESC LIMIT 12`);
 
   const outbound = await q(`
@@ -1168,7 +1169,7 @@ window.renderQueueIntel = async function() {{
     FROM transitions t
     JOIN transitions nxt ON t.CASE_ID=nxt.CASE_ID AND nxt.QUEUE_ORDER=t.QUEUE_ORDER+1
     WHERE t.QUEUE_NEW='${{qSafe}}'
-      AND t.CASE_ID IN (SELECT CASE_ID FROM cases c ${{wCases}})
+      AND t.CASE_ID IN (SELECT CASE_ID FROM cases c ${{w}})
     GROUP BY nxt.QUEUE_NEW ORDER BY n DESC LIMIT 12`);
 
   Plotly.react('chart-qi-inbound', [{{
@@ -1200,7 +1201,7 @@ window.renderQueueIntel = async function() {{
     SELECT CAST(DAYS_IN_QUEUE AS DOUBLE) as d
     FROM transitions
     WHERE QUEUE_NEW='${{qSafe}}'
-      AND CASE_ID IN (SELECT CASE_ID FROM cases c ${{wCases}})
+      AND CASE_ID IN (SELECT CASE_ID FROM cases c ${{w}})
       AND DAYS_IN_QUEUE IS NOT NULL`);
   const dwellVals = dwellRows.map(r=>r.d);
   const medDwell = dw.med_dwell || 0;
@@ -1237,7 +1238,7 @@ window.renderQueueIntel = async function() {{
       FROM transitions
       WHERE CASE_ID IN (
         SELECT DISTINCT CASE_ID FROM transitions WHERE QUEUE_NEW='${{qSafe}}'
-          AND CASE_ID IN (SELECT CASE_ID FROM cases c ${{wCases}})
+          AND CASE_ID IN (SELECT CASE_ID FROM cases c ${{w}})
       )
       GROUP BY CASE_ID
     )
@@ -1267,7 +1268,7 @@ window.renderQueueIntel = async function() {{
             SELECT CASE_ID, STRING_AGG(QUEUE_NEW,' → ' ORDER BY QUEUE_ORDER) as full_path
             FROM transitions
             WHERE CASE_ID IN (SELECT DISTINCT CASE_ID FROM transitions WHERE QUEUE_NEW='${{qSafe}}'
-              AND CASE_ID IN (SELECT CASE_ID FROM cases c ${{wCases}}))
+              AND CASE_ID IN (SELECT CASE_ID FROM cases c ${{w}}))
             GROUP BY CASE_ID
           )
           SELECT CAST(CASE_ID AS VARCHAR) as cid FROM cp WHERE full_path='${{fpSafe}}'`);
@@ -1375,7 +1376,7 @@ window.renderJourney = async function() {{
     .sort((a,b)=>b.n-a.n).slice(0,10);
 
   // Get cost metrics per path from DuckDB
-  const allPathCids = pathCounts.flatMap(p=>p.cids).map(c=>`'${{c}}'`).join(',');
+  const allPathCids = pathCounts.flatMap(p=>p.cids).map(c=>`'${{String(c).replace(/'/g,"''")}}'`).join(',');
   let costMap = {{}};
   if (allPathCids) {{
     const costRows = await q(`
