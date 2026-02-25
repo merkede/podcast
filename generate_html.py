@@ -8,7 +8,7 @@ Usage:
 
 Outputs to the output directory:
     index.html           — The full dashboard app
-    cases.parquet        — Case-level data with ML predictions
+    cases.parquet        — Case-level data
     transitions.parquet  — Queue transition data for journey/routing views
 
 Deploy all three files to Azure Static Web Apps or Azure Blob with static hosting.
@@ -28,16 +28,6 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-from sklearn.cluster import KMeans
-from sklearn.decomposition import PCA
-from sklearn.ensemble import (
-    GradientBoostingClassifier,
-    HistGradientBoostingClassifier,
-    RandomForestClassifier,
-)
-from sklearn.metrics import silhouette_score
-from sklearn.model_selection import StratifiedKFold, cross_val_score
-from sklearn.preprocessing import StandardScaler
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DATA PREPARATION  (mirrors dash_app.py)
@@ -96,166 +86,6 @@ def prepare_data(df):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ML MODELS  (mirrors dash_app.py)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def build_ml_models(case_df, df_raw):
-    artifacts = {}
-    df = case_df.copy()
-    for col in ["transfers", "inhours", "messages", "total_active_aht",
-                "routing_days", "loop_flag", "message_intensity"]:
-        df[col] = df[col].fillna(0)
-    df["inhours"] = df["inhours"].astype(int)
-
-    df["day_of_week"] = pd.to_datetime(df["created_at"], errors="coerce").dt.dayofweek
-    df["hour_of_day"] = pd.to_datetime(df["close_datetime"], errors="coerce").dt.hour
-    df["day_of_week"] = df["day_of_week"].fillna(
-        df["day_of_week"].median() if df["day_of_week"].notna().any() else 0
-    ).astype(int)
-    df["hour_of_day"] = df["hour_of_day"].fillna(
-        df["hour_of_day"].median() if df["hour_of_day"].notna().any() else 12
-    ).astype(int)
-
-    entry_dummies = pd.get_dummies(df["entry_queue"], prefix="eq")
-    X = pd.concat([df[["inhours", "day_of_week", "hour_of_day"]], entry_dummies], axis=1).astype(float).fillna(0)
-
-    valid_mask = df["ftr"].notna() & df["final_queue"].notna() & df["entry_queue"].notna()
-    X_valid_all = X[valid_mask]
-    df_valid_all = df[valid_mask]
-
-    ML_SAMPLE = 3000
-    if len(df_valid_all) > ML_SAMPLE:
-        idx = df_valid_all.sample(n=ML_SAMPLE, random_state=42).index
-        X_valid, df_valid = X_valid_all.loc[idx], df_valid_all.loc[idx]
-    else:
-        X_valid, df_valid = X_valid_all, df_valid_all
-
-    n_splits = min(5, max(2, min(
-        df_valid["ftr"].value_counts().min(),
-        df_valid["final_queue"].value_counts().min()
-    )))
-    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
-
-    def _best_model(candidates, y):
-        scores = {}
-        for name, m in candidates.items():
-            try:
-                s = cross_val_score(m, X_valid, y, cv=cv, scoring="roc_auc")
-                scores[name] = {"mean": float(s.mean()), "std": float(s.std())}
-            except Exception:
-                scores[name] = {"mean": 0.0, "std": 0.0}
-        best = max(scores, key=lambda k: scores[k]["mean"])
-        candidates[best].fit(X_valid, y)
-        return candidates[best], best, scores
-
-    candidates_m1 = {
-        "Random Forest": RandomForestClassifier(100, max_depth=5, min_samples_leaf=10, class_weight="balanced", random_state=42),
-        "Gradient Boosting": GradientBoostingClassifier(n_estimators=80, max_depth=4, min_samples_leaf=10, learning_rate=0.1, random_state=42),
-        "Hist Gradient Boost": HistGradientBoostingClassifier(max_iter=80, max_depth=4, min_samples_leaf=10, learning_rate=0.1, class_weight="balanced", random_state=42),
-    }
-    best_m1, best_m1_name, m1_scores = _best_model(candidates_m1, (df_valid["ftr"] == 0).astype(int))
-    df["transfer_risk"] = (best_m1.predict_proba(X)[:, 1] * 100).round(1)
-    artifacts["model1"] = {"best_name": best_m1_name, "all_scores": m1_scores,
-                           "cv_auc_mean": m1_scores[best_m1_name]["mean"]}
-
-    candidates_m2 = {
-        "Random Forest": RandomForestClassifier(100, max_depth=5, min_samples_leaf=10, class_weight="balanced", random_state=42),
-        "Gradient Boosting": GradientBoostingClassifier(n_estimators=80, max_depth=4, min_samples_leaf=5, learning_rate=0.1, random_state=42),
-        "Hist Gradient Boost": HistGradientBoostingClassifier(max_iter=80, max_depth=4, min_samples_leaf=10, learning_rate=0.1, class_weight="balanced", random_state=42),
-    }
-    y_q = df_valid["final_queue"]
-    m2_cv = StratifiedKFold(n_splits=min(n_splits, y_q.value_counts().min()), shuffle=True, random_state=42)
-    m2_scores = {}
-    for name, m in candidates_m2.items():
-        try:
-            s = cross_val_score(m, X_valid, y_q, cv=m2_cv, scoring="accuracy")
-            m2_scores[name] = {"mean": float(s.mean()), "std": float(s.std())}
-        except Exception:
-            m2_scores[name] = {"mean": 0.0, "std": 0.0}
-    best_m2_name = max(m2_scores, key=lambda k: m2_scores[k]["mean"])
-    best_m2 = candidates_m2[best_m2_name]
-    best_m2.fit(X_valid, y_q)
-    df["recommended_queue"] = best_m2.predict(X)
-    df["queue_match"] = (df["recommended_queue"] == df["final_queue"]).astype(int)
-    artifacts["model2"] = {"best_name": best_m2_name, "all_scores": m2_scores,
-                           "cv_acc_mean": m2_scores[best_m2_name]["mean"]}
-
-    # Model 3: Clustering
-    qc = df_raw.groupby(["CASE_ID", "QUEUE_NEW"]).size().unstack(fill_value=0)
-    qc.columns = ["qc_" + c for c in qc.columns]
-    cluster_features = ["transfers", "routing_days", "total_active_aht", "messages", "loop_flag", "inhours", "message_intensity"]
-    Xc = df.set_index("CASE_ID")[cluster_features].fillna(0).join(qc, how="left").fillna(0)
-    Xs = Xc.sample(min(ML_SAMPLE, len(Xc)), random_state=42)
-    scaler = StandardScaler()
-    Xs_scaled = scaler.fit_transform(Xs)
-    best_k, best_sil = 4, -1
-    for k in [3, 4, 5, 6]:
-        km = KMeans(n_clusters=k, n_init=10, random_state=42)
-        sil = silhouette_score(Xs_scaled, km.fit_predict(Xs_scaled))
-        if sil > best_sil:
-            best_k, best_sil = k, sil
-    km = KMeans(n_clusters=best_k, n_init=10, random_state=42)
-    km.fit(Xs_scaled)
-    Xc_scaled = scaler.transform(Xc)
-    df["journey_cluster"] = km.predict(Xc_scaled)
-    pca = PCA(n_components=2, random_state=42)
-    pca_coords = pca.fit_transform(Xc_scaled)
-
-    profiles = df.groupby("journey_cluster").agg(
-        avg_transfers=("transfers", "mean"), avg_routing=("routing_days", "mean"),
-        avg_aht=("total_active_aht", "mean"), avg_messages=("messages", "mean"),
-        loop_rate=("loop_flag", "mean"), count=("CASE_ID", "count"),
-    )
-    name_map = {}
-    for idx, row in profiles.sort_values("avg_transfers").iterrows():
-        if row["loop_rate"] > 0.25 and row["avg_transfers"] > 1:
-            name_map[idx] = "Ping-Pong Loop"
-        elif row["avg_transfers"] < 0.5:
-            name_map[idx] = "Quick Resolve"
-        elif row["avg_transfers"] >= 3:
-            name_map[idx] = "Complex Multi-Queue"
-        elif row["avg_aht"] > profiles["avg_aht"].median() * 1.3:
-            name_map[idx] = "High-Effort Escalation"
-        else:
-            name_map[idx] = "Standard Escalation"
-    seen = {}
-    for idx in sorted(name_map):
-        base = name_map[idx]
-        if base in seen:
-            name_map[idx] = f"{base} (Group {idx+1})"
-            if seen[base] == 1:
-                fi = [k for k, v in name_map.items() if v == base][0]
-                name_map[fi] = f"{base} (Group {fi+1})"
-            seen[base] += 1
-        else:
-            seen[base] = 1
-    df["cluster_name"] = df["journey_cluster"].map(name_map)
-
-    # Build cluster profile for embedding
-    cp_list = []
-    for idx, row in profiles.iterrows():
-        cp_list.append({
-            "cluster_id": int(idx), "name": name_map.get(idx, f"Cluster {idx}"),
-            "count": int(row["count"]), "avg_transfers": round(float(row["avg_transfers"]), 1),
-            "avg_aht": round(float(row["avg_aht"]), 0), "avg_routing": round(float(row["avg_routing"]), 1),
-            "avg_messages": round(float(row["avg_messages"]), 1), "loop_rate": round(float(row["loop_rate"]) * 100, 0),
-            "is_anomaly": float(row["avg_transfers"]) >= 3,
-        })
-    artifacts["model3"] = {
-        "best_k": best_k, "silhouette": round(float(best_sil), 3),
-        "cluster_profiles": cp_list, "name_map": {int(k): v for k, v in name_map.items()},
-        "pca_x": [round(float(x), 4) for x in pca_coords[:, 0]],
-        "pca_y": [round(float(y), 4) for y in pca_coords[:, 1]],
-        "pca_cluster": df["journey_cluster"].tolist(),
-        "pca_name": df["cluster_name"].tolist(),
-    }
-
-    ml_cols = ["day_of_week", "hour_of_day", "transfer_risk", "recommended_queue",
-               "queue_match", "journey_cluster", "cluster_name"]
-    return df[["CASE_ID"] + ml_cols], artifacts
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # PARQUET EXPORT
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -289,7 +119,7 @@ def export_transitions(df_raw, path):
 # HTML GENERATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-def generate_html(case_df, ml_artifacts, min_date, max_date, all_queues):
+def generate_html(case_df, min_date, max_date, all_queues):
     # Pre-compute overview KPIs from full data for initial display
     total = len(case_df)
     drr = (case_df["transfers"] == 0).mean() * 100
@@ -300,9 +130,6 @@ def generate_html(case_df, ml_artifacts, min_date, max_date, all_queues):
 
     # Escape for JSON embedding
     queues_json = json.dumps(all_queues)
-    ml3_json = json.dumps(ml_artifacts["model3"])
-    ml1_json = json.dumps(ml_artifacts["model1"])
-    ml2_json = json.dumps(ml_artifacts["model2"])
 
     months = sorted(case_df["created_at"].dropna().dt.strftime("%Y-%m").unique().tolist())
     months_json = json.dumps(months)
@@ -450,7 +277,6 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
   <button class="tab-btn" onclick="switchTab('queue',this)">Queue Intelligence</button>
   <button class="tab-btn" onclick="switchTab('journey',this)">Journey Pathways</button>
   <button class="tab-btn" onclick="switchTab('explorer',this)">Data Explorer</button>
-  <button class="tab-btn" onclick="switchTab('ml',this)">ML Insights</button>
 </div>
 
 <!-- TAB CONTENT -->
@@ -585,17 +411,6 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
     <div class="pager" id="explorer-pager"></div>
   </div>
 
-  <!-- ── TAB 8: ML INSIGHTS ── -->
-  <div id="tab-ml" class="tab-panel">
-    <div class="guide-stmt">
-      <strong>Three questions humans struggle with at scale</strong> — which cases are most
-      likely to bounce, where should they have gone in the first place, and what behavioural
-      patterns keep repeating? The answers are predictions, not rules.
-      <strong>Treat them as a second opinion.</strong>
-    </div>
-    <div id="ml-content"></div>
-  </div>
-
 </div><!-- /content-area -->
 
 <!-- CASE DETAIL MODAL -->
@@ -619,9 +434,6 @@ const MIN_DATE = '{min_date}';
 const MAX_DATE = '{max_date}';
 const ALL_QUEUES = {queues_json};
 const MONTHS = {months_json};
-const ML3 = {ml3_json};
-const ML1 = {ml1_json};
-const ML2 = {ml2_json};
 
 const DAY_NAMES = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
 const HOUR_LABELS = Array.from({{length:24}}, (_,i) => String(i).padStart(2,'0')+':00');
@@ -673,7 +485,6 @@ async function initDB() {{
 
   setStatus('Rendering dashboard...');
   await applyFilters();
-  renderML();
 
   document.getElementById('loading-overlay').style.display = 'none';
 }}
@@ -1403,9 +1214,7 @@ window.renderExplorer = async function() {{
       ROUND(total_active_aht, 0) as aht_min,
       ROUND(routing_days, 1) as routing_days,
       CAST(messages AS INT) as messages,
-      segment, inhours,
-      ROUND(transfer_risk, 1) as transfer_risk,
-      recommended_queue, cluster_name
+      segment, inhours
     FROM cases ${{w}} ORDER BY transfers DESC, total_active_aht DESC LIMIT 5000`);
 
   EXPLORER_DATA = rows;
@@ -1417,9 +1226,9 @@ function renderExplorerPage() {{
   const start = EXPLORER_PAGE * PAGE_SIZE;
   const page  = EXPLORER_DATA.slice(start, start + PAGE_SIZE);
   const cols  = ['case_id','entry_queue','final_queue','transfers','aht_min',
-                 'routing_days','messages','segment','transfer_risk','recommended_queue','cluster_name'];
+                 'routing_days','messages','segment'];
   const headers = ['Case ID','Entry Queue','Final Queue','Transfers','AHT (min)',
-                   'Routing Days','Messages','Segment','Transfer Risk %','Rec. Queue','Cluster'];
+                   'Routing Days','Messages','Segment'];
 
   let html = `<div style="overflow-x:auto"><table class="table data-table table-sm">
     <thead><tr>${{headers.map(h=>`<th>${{h}}</th>`).join('')}}</tr></thead><tbody>`;
@@ -1459,78 +1268,6 @@ window.downloadCSV = function() {{
 }};
 
 // ═══════════════════════════════════════════════════════
-// TAB 8: ML INSIGHTS (static from pre-computed JSON)
-// ═══════════════════════════════════════════════════════
-function renderML() {{
-  const profiles = ML3.cluster_profiles;
-  const anomalies = profiles.filter(p=>p.is_anomaly);
-  const anomalyCount = anomalies.reduce((s,p)=>s+p.count,0);
-  const totalCount = profiles.reduce((s,p)=>s+p.count,0);
-  const anomalyPct = totalCount > 0 ? (anomalyCount/totalCount*100).toFixed(1) : 0;
-
-  let profileCards = profiles.map((p,i) => {{
-    const badge = p.is_anomaly ? '<span class="anomaly-badge">ANOMALY</span>' : '';
-    let desc = '';
-    if (p.avg_transfers < 0.5) desc = `${{p.count.toLocaleString()}} cases resolved with minimal transfers. This is the ideal routing outcome.`;
-    else if (p.avg_transfers < 2) desc = `${{p.count.toLocaleString()}} cases with moderate transfer activity. Averaging ${{p.avg_transfers}} transfers and ${{p.avg_aht}}min AHT.`;
-    else desc = `${{p.count.toLocaleString()}} cases averaging ${{p.avg_transfers}} transfers, ${{p.avg_aht}}min AHT, ${{p.avg_routing}} routing days.${{p.loop_rate>20?' Loop rate of '+p.loop_rate+'% suggests bounce-back.':''}}${{p.is_anomaly?' These are the costliest cases and primary target for routing improvement.':''}}`;
-    return `<div class="col-md-3"><div class="kpi-card" style="border-top:3px solid ${{CHART_COLORS[i%CHART_COLORS.length]}}">
-      <div style="font-weight:700;color:${{CHART_COLORS[i%CHART_COLORS.length]}};font-size:.88rem;margin-bottom:.3rem">${{p.name}}${{badge}}</div>
-      <div style="font-size:.75rem;color:#888;margin-bottom:.4rem">${{p.count.toLocaleString()}} cases</div>
-      <div style="font-size:.78rem;color:#605E5C">
-        Avg Transfers: ${{p.avg_transfers}}<br>Avg AHT: ${{p.avg_aht}} min<br>
-        Avg Routing: ${{p.avg_routing}} days<br>Loop Rate: ${{p.loop_rate}}%
-      </div></div></div>`;
-  }}).join('');
-
-  // PCA scatter
-  const clusterNames = [...new Set(ML3.pca_name)];
-  const pcaTraces = clusterNames.map((name,i) => {{
-    const mask = ML3.pca_name.map((n,j)=>n===name?j:-1).filter(j=>j>=0);
-    return {{
-      type:'scatter', mode:'markers', name,
-      x:mask.map(j=>ML3.pca_x[j]), y:mask.map(j=>ML3.pca_y[j]),
-      marker:{{color:CHART_COLORS[i%CHART_COLORS.length],size:5,opacity:0.6}},
-    }};
-  }});
-
-  const m1 = ML1, m2 = ML2;
-  document.getElementById('ml-content').innerHTML = `
-    <div class="row g-2 mb-3">
-      <div class="col-md-4"><div class="kpi-card kpi-info">
-        <h4>Model 1: Transfer Risk (Best)</h4>
-        <h2>${{m1.best_name}}</h2>
-        <p style="font-size:.78rem;color:#888;margin:0">AUC: ${{(m1.cv_auc_mean*100).toFixed(1)}}%</p>
-      </div></div>
-      <div class="col-md-4"><div class="kpi-card kpi-info">
-        <h4>Model 2: Queue Recommendation (Best)</h4>
-        <h2>${{m2.best_name}}</h2>
-        <p style="font-size:.78rem;color:#888;margin:0">Accuracy: ${{(m2.cv_acc_mean*100).toFixed(1)}}%</p>
-      </div></div>
-      <div class="col-md-4"><div class="kpi-card kpi-info">
-        <h4>Model 3: Clustering</h4>
-        <h2>k=${{ML3.best_k}} clusters</h2>
-        <p style="font-size:.78rem;color:#888;margin:0">Silhouette: ${{ML3.silhouette}}</p>
-      </div></div>
-    </div>
-    <div class="insight-card mb-3">
-      <strong>Clustering &amp; Anomaly Detection:</strong>
-      ${{anomalyCount.toLocaleString()}} cases (${{anomalyPct}}%) fall into anomaly clusters (3+ avg transfers).
-      These are the costliest cases and the primary target for routing improvement.
-    </div>
-    <div class="row g-3 mb-3">${{profileCards}}</div>
-    <div class="chart-card"><div id="chart-pca"></div></div>`;
-
-  Plotly.react('chart-pca', pcaTraces, {{
-    title:'Clustering & Anomaly Detection (PCA 2D) — Silhouette: '+ML3.silhouette,
-    height:480, paper_bgcolor:'transparent', plot_bgcolor:'transparent',
-    xaxis:{{showgrid:true,gridcolor:'#EDEBE9'}},
-    yaxis:{{showgrid:true,gridcolor:'#EDEBE9'}},
-    margin:{{t:55,l:50,r:20,b:50}}, legend:{{orientation:'h',y:-0.15}},
-  }}, {{responsive:true}});
-}}
-
-// ═══════════════════════════════════════════════════════
 // CASE DETAIL MODAL
 // ═══════════════════════════════════════════════════════
 window.showCaseModal = async function(title, cids) {{
@@ -1546,9 +1283,7 @@ window.showCaseModal = async function(title, cids) {{
     SELECT CAST(CASE_ID AS VARCHAR) as case_id, entry_queue, final_queue,
       CAST(transfers AS INT) as transfers,
       ROUND(total_active_aht,0) as aht_min, ROUND(routing_days,1) as routing_days,
-      CAST(messages AS INT) as messages, segment,
-      ROUND(transfer_risk,1) as risk_pct,
-      recommended_queue, cluster_name
+      CAST(messages AS INT) as messages, segment
     FROM cases WHERE CAST(CASE_ID AS VARCHAR) IN (${{idList}})
     ORDER BY transfers DESC, total_active_aht DESC`);
 
@@ -1564,8 +1299,8 @@ window.showCaseModal = async function(title, cids) {{
     ${{kpiCard('Median Messages', Math.round(medMsg), 'kpi-info')}}
   </div>`;
 
-  const cols = ['case_id','entry_queue','final_queue','transfers','aht_min','routing_days','messages','segment','risk_pct','recommended_queue','cluster_name'];
-  const headers = ['Case ID','Entry Queue','Final Queue','Transfers','AHT (min)','Routing Days','Messages','Segment','Risk %','Rec. Queue','Cluster'];
+  const cols = ['case_id','entry_queue','final_queue','transfers','aht_min','routing_days','messages','segment'];
+  const headers = ['Case ID','Entry Queue','Final Queue','Transfers','AHT (min)','Routing Days','Messages','Segment'];
   let tableHtml = `<div style="overflow-x:auto;max-height:400px;overflow-y:auto">
     <table class="table data-table table-sm">
     <thead><tr>${{headers.map(h=>`<th>${{h}}</th>`).join('')}}</tr></thead><tbody>`;
@@ -1620,14 +1355,6 @@ def main():
     df_raw, case_df = prepare_data(df_raw)
     print(f"  {len(case_df):,} unique cases")
 
-    print("\nTraining ML models (3,000-row sample) ...")
-    _ml, ml_artifacts = build_ml_models(case_df, df_raw)
-    for col in _ml.columns:
-        if col != "CASE_ID":
-            case_df[col] = _ml[col].values
-    del _ml
-    print("  done")
-
     print("\nExporting Parquet files ...")
     export_cases(case_df, out / "cases.parquet")
     export_transitions(df_raw, out / "transitions.parquet")
@@ -1637,7 +1364,7 @@ def main():
     all_queues = sorted(case_df["entry_queue"].dropna().unique().tolist())
 
     print("\nGenerating index.html ...")
-    html = generate_html(case_df, ml_artifacts, min_date, max_date, all_queues)
+    html = generate_html(case_df, min_date, max_date, all_queues)
     (out / "index.html").write_text(html, encoding="utf-8")
     mb = (out / "index.html").stat().st_size / 1024 / 1024
     print(f"  index.html         {mb:.1f} MB")
