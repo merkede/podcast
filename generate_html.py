@@ -125,7 +125,7 @@ def export_transitions(df_raw, path):
 # HTML GENERATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-def generate_html(case_df, min_date, max_date, all_queues):
+def generate_html(case_df, min_date, max_date, all_queues, all_trans_queues):
     # Pre-compute overview KPIs from full data for initial display
     total = len(case_df)
     drr = (case_df["transfers"] == 0).mean() * 100
@@ -136,6 +136,7 @@ def generate_html(case_df, min_date, max_date, all_queues):
 
     # Escape for JSON embedding
     queues_json = json.dumps(all_queues)
+    trans_queues_json = json.dumps(all_trans_queues)
 
     months = sorted(case_df["created_at"].dropna().dt.strftime("%Y-%m").unique().tolist())
     months_json = json.dumps(months)
@@ -438,7 +439,8 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
 // ═══════════════════════════════════════════════════════
 const MIN_DATE = '{min_date}';
 const MAX_DATE = '{max_date}';
-const ALL_QUEUES = {queues_json};
+const ALL_QUEUES = {queues_json};        // entry queues only (for filter panel)
+const ALL_TRANS_QUEUES = {trans_queues_json};  // all queues in transitions (for QI + Journey)
 const MONTHS = {months_json};
 
 const DAY_NAMES = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
@@ -553,7 +555,7 @@ function populateQueueFilter() {{
 function populateQIQueues() {{
   const sel = document.getElementById('qi-queue-select');
   const jSel = document.getElementById('journey-queue-select');
-  const opts = ALL_QUEUES.map(q => `<option value="${{q}}">${{q}}</option>`).join('');
+  const opts = ALL_TRANS_QUEUES.map(q => `<option value="${{q}}">${{q}}</option>`).join('');
   sel.innerHTML = opts;
   jSel.innerHTML = opts;
 }}
@@ -960,7 +962,9 @@ window.renderQueueIntel = async function() {{
     AVG(CASE WHEN transfers=0 THEN 1.0 ELSE 0.0 END)*100 as drr,
     AVG(transfers) as avg_xfer, MEDIAN(total_active_aht) as med_aht,
     MEDIAN(routing_days) as med_routing
-    FROM cases c ${{w}} AND c.entry_queue='${{selQ.replace(/'/g,"''")}}'`);
+    FROM cases c ${{w}} AND CAST(c.CASE_ID AS VARCHAR) IN (
+      SELECT CAST(CASE_ID AS VARCHAR) FROM transitions WHERE QUEUE_NEW='${{selQ.replace(/'/g,"''")}}'
+    )`);
   const d = stats[0] || {{}};
   document.getElementById('qi-kpis').innerHTML = [
     kpiCard('Cases Through Queue', (d.n||0).toLocaleString(), 'kpi-primary'),
@@ -1372,9 +1376,11 @@ def main():
     min_date = case_df["created_at"].min().strftime("%Y-%m-%d")
     max_date = case_df["created_at"].max().strftime("%Y-%m-%d")
     all_queues = sorted(case_df["entry_queue"].dropna().unique().tolist())
+    # All queues that appear anywhere in transitions (for QI + Journey dropdowns)
+    all_trans_queues = sorted(df_raw["QUEUE_NEW"].dropna().unique().tolist())
 
     print("\nGenerating index.html ...")
-    html = generate_html(case_df, min_date, max_date, all_queues)
+    html = generate_html(case_df, min_date, max_date, all_queues, all_trans_queues)
     (out / "index.html").write_text(html, encoding="utf-8")
     mb = (out / "index.html").stat().st_size / 1024 / 1024
     print(f"  index.html         {mb:.1f} MB")
