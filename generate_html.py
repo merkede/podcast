@@ -666,16 +666,18 @@ async function renderOverview(f) {{
   ].join('');
 
   const xfer = await q(`SELECT transfer_bin, COUNT(*) as n FROM cases ${{w}} GROUP BY transfer_bin ORDER BY transfer_bin`);
-  const labels = ['0','1','2','3+'];
-  const counts = labels.map(l => (xfer.find(r=>r.transfer_bin===l)||{{n:0}}).n);
+  const binKeys  = ['0','1','2','3+'];
+  const binTicks = ['0 transfers','1 transfer','2 transfers','3+ transfers (incl. 4, 5…)'];
+  const counts = binKeys.map(l => (xfer.find(r=>r.transfer_bin===l)||{{n:0}}).n);
   Plotly.react('chart-ov-transfers', [{{
-    type:'bar', x:labels, y:counts,
+    type:'bar', x:binTicks, y:counts,
     marker:{{color:['#107C10','#FFB900','#E8820C','#E81123']}},
     text:counts.map(v=>v.toLocaleString()), textposition:'outside',
   }}], {{
-    title:'Cases by Transfer Count', height:320, margin:{{t:50,l:50,r:20,b:40}},
+    title:'Cases by Transfer Count', height:320, margin:{{t:50,l:50,r:20,b:60}},
     paper_bgcolor:'transparent', plot_bgcolor:'transparent',
-    xaxis:{{showgrid:false}}, yaxis:{{showgrid:true,gridcolor:'#EDEBE9'}},
+    xaxis:{{showgrid:false, tickfont:{{size:10}}}},
+    yaxis:{{showgrid:true,gridcolor:'#EDEBE9'}},
   }}, {{responsive:true}});
 
   const seg = await q(`SELECT segment, COUNT(*) as n FROM cases ${{w}} GROUP BY segment`);
@@ -1353,6 +1355,12 @@ function drawSankey(divId, paths, cids, title) {{
   // Store link→case IDs by position index (not as customdata, which breaks Plotly.js Sankey)
   const linkCidsByIdx = links.map(l=>l.cids);
 
+  // Convert hex → rgba so link bands are clearly visible against the white background
+  function hexRgba(hex, a) {{
+    const r=parseInt(hex.slice(1,3),16), g=parseInt(hex.slice(3,5),16), b=parseInt(hex.slice(5,7),16);
+    return `rgba(${{r}},${{g}},${{b}},${{a}})`;
+  }}
+
   const trace = {{
     type:'sankey',
     arrangement:'snap',
@@ -1363,6 +1371,7 @@ function drawSankey(divId, paths, cids, title) {{
       target:links.map(l=>nodeIdx[l.t]),
       value:links.map(l=>l.cids.length),
       label:links.map(l=>l.cids.length+' cases'),
+      color:links.map(l=>hexRgba(CHART_COLORS[nodeIdx[l.s]%CHART_COLORS.length], 0.45)),
     }},
   }};
 
@@ -1421,11 +1430,16 @@ window.renderExplorer = async function(page) {{
 
     const cols = ['case_id','entry_queue','final_queue','transfers','transfer_bin',
                   'aht_min','routing_days','messages','segment','inhours','loop_flag'];
-    const headers = ['Case ID','Entry Queue','Final Queue','Transfers','Group',
+    const headers = ['Case ID','Entry Queue','Final Queue','# Transfers (exact)','Chart Group (3+=3 or more)',
                      'AHT (min)','Routing Days','Messages','Segment','In-Hours','Loop'];
 
     const totalPages = Math.ceil(EXPLORER_TOTAL / PAGE_SIZE);
-    let html = `<div style="overflow-x:auto"><table class="table data-table table-sm">
+    let html = `<div style="overflow-x:auto">
+      <p style="font-size:.75rem;color:#888;margin-bottom:.25rem;">
+        <strong># Transfers (exact)</strong> shows the real transfer count per case.
+        Charts on other tabs group 3, 4, 5… into a single <strong>3+</strong> bucket — so cases showing 4 or 5 here appear in the "3+" bars elsewhere.
+      </p>
+      <table class="table data-table table-sm">
       <thead><tr>${{headers.map(h=>`<th>${{h}}</th>`).join('')}}</tr></thead><tbody>`;
     for (const row of rows) {{
       html += `<tr onclick="showCaseModal('Case ${{row.case_id}}',${{JSON.stringify([String(row.case_id)])}})">
