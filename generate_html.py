@@ -708,7 +708,8 @@ async function renderProcess(f) {{
 // ═══════════════════════════════════════════════════════
 // TAB 3: COST & EFFORT
 // ═══════════════════════════════════════════════════════
-let COST_BIN_CASES = {{}};  // transfer_bin -> [case_ids]
+let COST_BIN_CASES = {{}};   // transfer_bin -> [case_ids]
+let COST_TRACE_BINS = [];   // ordered list of bins that got a trace (for curveNumber mapping)
 
 async function renderCost(f) {{
   const w = buildWhere(f);
@@ -767,9 +768,11 @@ async function renderCost(f) {{
     COST_BIN_CASES[r.transfer_bin].push(r.cid);
   }}
 
+  COST_TRACE_BINS = [];
   for (const bin of bins) {{
     const row = stats.find(r=>r.transfer_bin===bin);
     if (!row) continue;
+    COST_TRACE_BINS.push(bin);
     const label = bin + (bin==='1'?' transfer':' transfers');
     const p95_aht = row.p95;
     const iqr_aht = row.q3 - row.q1;
@@ -794,9 +797,9 @@ async function renderCost(f) {{
   }}
 
   const boxLayout = (title, ytitle) => ({{
-    title, yaxis_title:ytitle, height:400, showlegend:false,
+    title, height:400, showlegend:false,
     paper_bgcolor:'transparent', plot_bgcolor:'transparent',
-    yaxis:{{showgrid:true,gridcolor:'#EDEBE9'}},
+    yaxis:{{title:ytitle, showgrid:true, gridcolor:'#EDEBE9'}},
     xaxis:{{showgrid:false}}, margin:{{t:50,l:60,r:30,b:40}},
   }});
 
@@ -833,8 +836,7 @@ async function renderCost(f) {{
 
 async function showCostModal(data, chartType) {{
   const curveIdx = data.points[0].curveNumber;
-  const bins = ['0','1','2','3+'];
-  const bin = bins[curveIdx];
+  const bin = COST_TRACE_BINS[curveIdx];
   const cids = COST_BIN_CASES[bin] || [];
   const label = bin + (bin==='1'?' transfer':' transfers');
   await showCaseModal(`${{chartType}}: ${{cids.length.toLocaleString()}} cases — ${{label}}`, cids);
