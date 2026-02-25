@@ -264,13 +264,18 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
     </div>
     <div class="col-md-2">
       <div class="filter-label">Segment</div>
+      <div class="d-flex gap-1 mb-1">
+        <button onclick="setSegment('Retail')" class="toggle-btn" style="flex:1;font-size:.72rem;">Retail</button>
+        <button onclick="setSegment('Claims')" class="toggle-btn" style="flex:1;font-size:.72rem;">Claims</button>
+      </div>
       <select id="f-segment" multiple>
         <option value="Retail" selected>Retail</option>
         <option value="Claims" selected>Claims</option>
       </select>
     </div>
-    <div class="col-md-2 d-flex align-items-end">
+    <div class="col-md-2 d-flex align-items-end gap-1 flex-wrap">
       <button onclick="applyFilters()" class="btn btn-sm btn-primary w-100">Apply Filters</button>
+      <button onclick="resetFilters()" class="btn btn-sm btn-outline-secondary w-100">Reset Filters</button>
     </div>
   </div>
 </div>
@@ -461,8 +466,9 @@ const CHART_COLORS = ['#0078D4','#FFB900','#E81123','#107C10','#742774','#00BCF2
 import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm/+esm';
 
 let CONN = null;
-let EXPLORER_DATA = [];
 let EXPLORER_PAGE = 0;
+let EXPLORER_TOTAL = 0;
+let EXPLORER_WHERE = '';
 const PAGE_SIZE = 50;
 let HEATMAP_VIEW = 'volume';
 let HEATMAP_DATA = null;
@@ -594,6 +600,22 @@ window.applyFilters = async function() {{
   else if (tabId === 'explorer') renderExplorer();
 }};
 
+window.resetFilters = function() {{
+  document.getElementById('f-start').value = MIN_DATE;
+  document.getElementById('f-end').value = MAX_DATE;
+  const qSel = document.getElementById('f-queue');
+  Array.from(qSel.options).forEach(o => o.selected = false);
+  Array.from(document.getElementById('f-hours').options).forEach(o => o.selected = true);
+  Array.from(document.getElementById('f-segment').options).forEach(o => o.selected = true);
+  applyFilters();
+}};
+
+window.setSegment = function(seg) {{
+  const sSel = document.getElementById('f-segment');
+  Array.from(sSel.options).forEach(o => o.selected = (o.value === seg));
+  applyFilters();
+}};
+
 // ═══════════════════════════════════════════════════════
 // KPI HELPERS
 // ═══════════════════════════════════════════════════════
@@ -656,16 +678,17 @@ async function renderOverview(f) {{
 // ═══════════════════════════════════════════════════════
 async function renderProcess(f) {{
   const w = buildWhere(f, 'c');
-  const stats = await q(`SELECT COUNT(*) as total, AVG(transfers) as avg_xfer,
+  const stats = await q(`SELECT COUNT(*) as total,
     AVG(CASE WHEN transfers=0 THEN 1.0 ELSE 0.0 END)*100 as drr,
-    MEDIAN(routing_days) as med_routing
+    AVG(loop_flag)*100 as loop_rate, SUM(loop_flag) as rework_cases,
+    AVG(CASE WHEN transfers>=2 THEN 1.0 ELSE 0.0 END)*100 as multi_rate
     FROM cases c ${{w}}`);
   const d = stats[0] || {{}};
   document.getElementById('process-kpis').innerHTML = [
-    kpiCard('Total Cases', (d.total||0).toLocaleString(), 'kpi-primary'),
     kpiCard('Direct Resolution Rate', (d.drr||0).toFixed(1)+'%', 'kpi-success'),
-    kpiCard('Avg Transfers', (d.avg_xfer||0).toFixed(2), 'kpi-warning'),
-    kpiCard('Median Routing Days', (d.med_routing||0).toFixed(1), 'kpi-info'),
+    kpiCard('Loop / Rework Rate', (d.loop_rate||0).toFixed(1)+'%', 'kpi-danger'),
+    kpiCard('Cases with Rework', (d.rework_cases||0).toLocaleString(), 'kpi-warning'),
+    kpiCard('Multi-Transfer Rate', (d.multi_rate||0).toFixed(1)+'%', 'kpi-info'),
   ].join('');
 
   // Intermediary queues Pareto
@@ -674,36 +697,69 @@ async function renderProcess(f) {{
     WITH max_orders AS (
       SELECT CASE_ID, MAX(QUEUE_ORDER) as max_ord FROM transitions GROUP BY CASE_ID
     )
-    SELECT t.QUEUE_NEW, COUNT(*) as n
+    SELECT t.QUEUE_NEW, SUM(t.DAYS_IN_QUEUE) as delay_days
     FROM transitions t
     JOIN max_orders m ON t.CASE_ID = m.CASE_ID
     WHERE t.QUEUE_ORDER > 1 AND t.QUEUE_ORDER < m.max_ord
       AND t.CASE_ID IN (SELECT CASE_ID FROM cases c ${{where_cases}})
-    GROUP BY t.QUEUE_NEW ORDER BY n DESC LIMIT 15`);
-  Plotly.react('chart-pareto', [{{
-    type:'bar', x:pareto.map(r=>r.n), y:pareto.map(r=>r.QUEUE_NEW),
-    orientation:'h', marker:{{color:COLORS.danger}},
-    text:pareto.map(r=>r.n.toLocaleString()), textposition:'outside',
-  }}], {{
-    title:'Top Intermediary Queues (Pareto)', height:420,
-    margin:{{t:50,l:200,r:60,b:40}},
+    GROUP BY t.QUEUE_NEW ORDER BY delay_days DESC LIMIT 15`);
+  const totalDelay = pareto.reduce((s,r)=>s+r.delay_days,0);
+  let cumPct = 0;
+  const cumPcts = pareto.map(r => {{ cumPct += r.delay_days/totalDelay*100; return Math.round(cumPct*10)/10; }});
+  Plotly.react('chart-pareto', [
+    {{
+      type:'bar', x:pareto.map(r=>r.QUEUE_NEW), y:pareto.map(r=>r.delay_days),
+      marker:{{color:COLORS.danger}},
+      text:pareto.map(r=>r.delay_days.toFixed(1)+' days'), textposition:'outside',
+      name:'Delay Days',
+    }},
+    {{
+      type:'scatter', mode:'lines+markers',
+      x:pareto.map(r=>r.QUEUE_NEW), y:cumPcts,
+      yaxis:'y2', name:'Cumulative %',
+      line:{{color:COLORS.primary,width:2}}, marker:{{color:COLORS.primary,size:6}},
+    }},
+  ], {{
+    title:'Top Intermediary Queues by Total Delay Days (Pareto)', height:420,
+    margin:{{t:50,l:60,r:60,b:120}},
     paper_bgcolor:'transparent', plot_bgcolor:'transparent',
-    yaxis:{{autorange:'reversed',tickfont:{{size:10}}}},
-    xaxis:{{showgrid:true,gridcolor:'#EDEBE9'}},
+    xaxis:{{tickangle:-35,tickfont:{{size:9}},showgrid:false}},
+    yaxis:{{title:'Total Delay Days',showgrid:true,gridcolor:'#EDEBE9'}},
+    yaxis2:{{title:'Cumulative %',overlaying:'y',side:'right',range:[0,105],showgrid:false}},
+    legend:{{orientation:'h',y:1.1}}, showlegend:true,
   }}, {{responsive:true}});
 
-  const entry = await q(`SELECT entry_queue, COUNT(*) as n FROM cases c ${{where_cases}}
-    GROUP BY entry_queue ORDER BY n DESC LIMIT 12`);
-  Plotly.react('chart-entry-dist', [{{
-    type:'bar', x:entry.map(r=>r.n), y:entry.map(r=>r.entry_queue),
-    orientation:'h', marker:{{color:COLORS.primary}},
-    text:entry.map(r=>r.n.toLocaleString()), textposition:'outside',
-  }}], {{
-    title:'Cases by Entry Queue', height:420,
+  const entry = await q(`
+    SELECT entry_queue,
+      AVG(CASE WHEN transfers=0 THEN 100.0 ELSE 0.0 END) as ftr_pct,
+      AVG(CASE WHEN transfers>0 THEN 100.0 ELSE 0.0 END) as xfer_pct,
+      COUNT(*) as n
+    FROM cases c ${{where_cases}}
+    GROUP BY entry_queue HAVING COUNT(*) >= 5
+    ORDER BY ftr_pct ASC LIMIT 12`);
+  Plotly.react('chart-entry-dist', [
+    {{
+      type:'bar', orientation:'h',
+      x:entry.map(r=>Math.round(r.xfer_pct*10)/10),
+      y:entry.map(r=>r.entry_queue),
+      name:'Transfer %', marker:{{color:COLORS.danger}},
+      text:entry.map(r=>Math.round(r.xfer_pct)+'%'), textposition:'inside',
+    }},
+    {{
+      type:'bar', orientation:'h',
+      x:entry.map(r=>Math.round(r.ftr_pct*10)/10),
+      y:entry.map(r=>r.entry_queue),
+      name:'FTR %', marker:{{color:COLORS.success}},
+      text:entry.map(r=>Math.round(r.ftr_pct)+'%'), textposition:'inside',
+    }},
+  ], {{
+    title:'Entry Queue FTR vs Transfer % (worst → best)', height:420,
+    barmode:'stack',
     margin:{{t:50,l:200,r:60,b:40}},
     paper_bgcolor:'transparent', plot_bgcolor:'transparent',
-    yaxis:{{autorange:'reversed',tickfont:{{size:10}}}},
-    xaxis:{{showgrid:true,gridcolor:'#EDEBE9'}},
+    xaxis:{{range:[0,100],title:'%',showgrid:true,gridcolor:'#EDEBE9'}},
+    yaxis:{{tickfont:{{size:9}}}},
+    legend:{{orientation:'h',y:1.1}},
   }}, {{responsive:true}});
 }}
 
@@ -727,7 +783,7 @@ async function renderCost(f) {{
       QUANTILE_CONT(messages, 0.75) as mq3,
       QUANTILE_CONT(messages, 0.95) as mp95,
       AVG(messages) as mmean
-    FROM cases ${{w}} AND total_active_aht > 0
+    FROM cases ${{w}}
     GROUP BY transfer_bin ORDER BY transfer_bin`);
 
   const baseline_aht = stats.find(r=>r.transfer_bin==='0');
@@ -859,20 +915,24 @@ async function renderHeatmap(f) {{
   const stats = await q(`SELECT COUNT(*) as total,
     AVG(CASE WHEN inhours=0 THEN 1.0 ELSE 0.0 END)*100 as ooh_rate,
     AVG(CASE WHEN inhours=0 AND transfers>=2 THEN 1.0 ELSE 0.0 END)*100 as ooh_multi,
-    AVG(CASE WHEN inhours=1 AND transfers>=2 THEN 1.0 ELSE 0.0 END)*100 as ih_multi
+    AVG(CASE WHEN inhours=1 AND transfers>=2 THEN 1.0 ELSE 0.0 END)*100 as ih_multi,
+    MEDIAN(CASE WHEN inhours=1 THEN total_active_aht END) as ih_aht,
+    MEDIAN(CASE WHEN inhours=0 THEN total_active_aht END) as ooh_aht
     FROM cases ${{w}}`);
   const d = stats[0] || {{}};
 
+  const ahtPenalty = d.ih_aht > 0 ? Math.round((d.ooh_aht/d.ih_aht - 1)*100) : 0;
   document.getElementById('hours-guide-stmt').innerHTML =
     `Out-of-hours cases don't just transfer more often, <strong>they transfer harder.</strong>
-     The OOH multi-transfer rate is <strong>${{Math.round(d.ooh_multi||0)}}% vs ${{Math.round(d.ih_multi||0)}}% in-hours.</strong>
+     The OOH multi-transfer rate is <strong>${{Math.round(d.ooh_multi||0)}}% vs ${{Math.round(d.ih_multi||0)}}% in-hours</strong>
+     — and each of those transfers costs <strong>${{ahtPenalty > 0 ? '+' : ''}}${{ahtPenalty}}% more handle time</strong> than in-hours cases.
      The heatmap below reveals exactly when the routing breaks down across the week.`;
 
   document.getElementById('hours-kpis').innerHTML = [
     kpiCard('In-Hours Multi-Transfer %', Math.round(d.ih_multi||0)+'%', 'kpi-success'),
     kpiCard('OOH Multi-Transfer %', Math.round(d.ooh_multi||0)+'%', 'kpi-danger'),
-    kpiCard('OOH Case Rate', Math.round(d.ooh_rate||0)+'%', 'kpi-info'),
-    kpiCard('Total Cases', (d.total||0).toLocaleString(), 'kpi-primary'),
+    kpiCard('Median AHT — In-Hours', Math.round(d.ih_aht||0)+' min', 'kpi-success'),
+    kpiCard('Median AHT — OOH', Math.round(d.ooh_aht||0)+' min', 'kpi-danger'),
   ].join('');
 
   // Fetch heatmap data — % of day
@@ -880,23 +940,23 @@ async function renderHeatmap(f) {{
     WITH raw AS (
       SELECT day_of_week, hour_of_day,
         COUNT(*) as volume,
-        SUM(total_active_aht) as sum_aht,
-        SUM(messages) as sum_msgs,
-        SUM(routing_days) as sum_routing,
+        MEDIAN(total_active_aht) as med_aht,
+        MEDIAN(messages) as med_msgs,
+        MEDIAN(routing_days) as med_routing,
         AVG(CAST(inhours AS DOUBLE)) as inhours_rate
       FROM cases ${{w}} AND day_of_week IS NOT NULL AND hour_of_day IS NOT NULL
       GROUP BY day_of_week, hour_of_day
     ),
     day_sums AS (
-      SELECT day_of_week, SUM(volume) as dv, SUM(sum_aht) as da,
-        SUM(sum_msgs) as dm, SUM(sum_routing) as dr
+      SELECT day_of_week, SUM(volume) as dv,
+        SUM(med_aht) as da, SUM(med_msgs) as dm, SUM(med_routing) as dr
       FROM raw GROUP BY day_of_week
     )
     SELECT r.day_of_week, r.hour_of_day,
       CASE WHEN d.dv>0 THEN r.volume*100.0/d.dv ELSE 0 END as volume_pct,
-      CASE WHEN d.da>0 THEN r.sum_aht*100.0/d.da ELSE 0 END as aht_pct,
-      CASE WHEN d.dm>0 THEN r.sum_msgs*100.0/d.dm ELSE 0 END as msgs_pct,
-      CASE WHEN d.dr>0 THEN r.sum_routing*100.0/d.dr ELSE 0 END as routing_pct,
+      CASE WHEN d.da>0 THEN r.med_aht*100.0/d.da ELSE 0 END as aht_pct,
+      CASE WHEN d.dm>0 THEN r.med_msgs*100.0/d.dm ELSE 0 END as msgs_pct,
+      CASE WHEN d.dr>0 THEN r.med_routing*100.0/d.dr ELSE 0 END as routing_pct,
       r.inhours_rate
     FROM raw r JOIN day_sums d ON r.day_of_week=d.day_of_week`);
 
@@ -935,7 +995,7 @@ function drawHeatmap() {{
   Plotly.react('chart-heatmap', [{{
     type:'heatmap', z:vals, x:HOUR_LABELS, y:DAY_NAMES,
     colorscale:RED_SCALE, showscale:true,
-    colorbar:{{title:{{text:'% of day',font:{{size:10}}}},thickness:12,len:0.85}},
+    colorbar:{{title:{{text:HEATMAP_VIEW==='inhours'?'In-Hours Rate (%)':'% of day',font:{{size:10}}}},thickness:12,len:0.85}},
     xgap:2, ygap:2,
     hovertemplate:'%{{y}}, %{{x}}<br>%{{z:.1f}}%<extra></extra>',
     text:vals.map(row=>row.map(v=>v.toFixed(1)+'%')),
@@ -1211,16 +1271,20 @@ function drawSankey(divId, paths, cids, title) {{
 // ═══════════════════════════════════════════════════════
 // TAB 7: DATA EXPLORER
 // ═══════════════════════════════════════════════════════
-window.renderExplorer = async function() {{
+window.renderExplorer = async function(page) {{
+  page = page ?? 0;
   const f = getFilterState();
   let w = buildWhere(f);
   const xfer = document.getElementById('ex-xfer').value;
   if (xfer !== 'all') w += ` AND transfer_bin='${{xfer}}'`;
+  EXPLORER_WHERE = w;
+  EXPLORER_PAGE = page;
 
   const countRow = await q(`SELECT COUNT(*) as n FROM cases ${{w}}`);
-  const total = countRow[0]?.n || 0;
-  document.getElementById('ex-count').textContent = total.toLocaleString() + ' cases';
+  EXPLORER_TOTAL = countRow[0]?.n || 0;
+  document.getElementById('ex-count').textContent = EXPLORER_TOTAL.toLocaleString() + ' cases';
 
+  const offset = page * PAGE_SIZE;
   const rows = await q(`
     SELECT CAST(CASE_ID AS VARCHAR) as case_id, entry_queue, final_queue,
       CAST(transfers AS INT) as transfers,
@@ -1228,54 +1292,52 @@ window.renderExplorer = async function() {{
       ROUND(total_active_aht, 0) as aht_min,
       ROUND(routing_days, 1) as routing_days,
       CAST(messages AS INT) as messages,
-      segment, inhours
-    FROM cases ${{w}} ORDER BY transfers DESC, total_active_aht DESC LIMIT 5000`);
+      segment,
+      CAST(inhours AS INT) as inhours,
+      CAST(loop_flag AS INT) as loop_flag
+    FROM cases ${{w}} ORDER BY transfers DESC, total_active_aht DESC
+    LIMIT ${{PAGE_SIZE}} OFFSET ${{offset}}`);
 
-  EXPLORER_DATA = rows;
-  EXPLORER_PAGE = 0;
-  renderExplorerPage();
-}};
+  const cols = ['case_id','entry_queue','final_queue','transfers','transfer_bin',
+                'aht_min','routing_days','messages','segment','inhours','loop_flag'];
+  const headers = ['Case ID','Entry Queue','Final Queue','Transfers','Group',
+                   'AHT (min)','Routing Days','Messages','Segment','In-Hours','Loop'];
 
-function renderExplorerPage() {{
-  const start = EXPLORER_PAGE * PAGE_SIZE;
-  const page  = EXPLORER_DATA.slice(start, start + PAGE_SIZE);
-  const cols  = ['case_id','entry_queue','final_queue','transfers','aht_min',
-                 'routing_days','messages','segment'];
-  const headers = ['Case ID','Entry Queue','Final Queue','Transfers','AHT (min)',
-                   'Routing Days','Messages','Segment'];
-
+  const totalPages = Math.ceil(EXPLORER_TOTAL / PAGE_SIZE);
   let html = `<div style="overflow-x:auto"><table class="table data-table table-sm">
     <thead><tr>${{headers.map(h=>`<th>${{h}}</th>`).join('')}}</tr></thead><tbody>`;
-  for (const row of page) {{
+  for (const row of rows) {{
     html += `<tr onclick="showCaseModal('Case ${{row.case_id}}',${{JSON.stringify([String(row.case_id)])}})">
       ${{cols.map(c=>`<td>${{row[c]??''}}</td>`).join('')}}</tr>`;
   }}
   html += '</tbody></table></div>';
   document.getElementById('explorer-table-container').innerHTML = html;
 
-  // Pager
-  const totalPages = Math.ceil(EXPLORER_DATA.length / PAGE_SIZE);
-  let pagerHtml = `<button onclick="explorerPage(${{EXPLORER_PAGE-1}})" ${{EXPLORER_PAGE===0?'disabled':''}}>‹</button>`;
-  const start_p = Math.max(0, EXPLORER_PAGE-2), end_p = Math.min(totalPages, start_p+5);
-  for (let i=start_p; i<end_p; i++) {{
-    pagerHtml += `<button class="${{i===EXPLORER_PAGE?'active':''}}" onclick="explorerPage(${{i}})">${{i+1}}</button>`;
+  let pagerHtml = `<button onclick="window.renderExplorer(${{EXPLORER_PAGE-1}})" ${{EXPLORER_PAGE===0?'disabled':''}}>‹</button>`;
+  const sp = Math.max(0, EXPLORER_PAGE-2), ep = Math.min(totalPages, sp+5);
+  for (let i=sp; i<ep; i++) {{
+    pagerHtml += `<button class="${{i===EXPLORER_PAGE?'active':''}}" onclick="window.renderExplorer(${{i}})">${{i+1}}</button>`;
   }}
-  pagerHtml += `<button onclick="explorerPage(${{EXPLORER_PAGE+1}})" ${{EXPLORER_PAGE>=totalPages-1?'disabled':''}}>›</button>`;
-  pagerHtml += ` <span style="font-size:.75rem;color:#888">Showing ${{start+1}}-${{Math.min(start+PAGE_SIZE,EXPLORER_DATA.length)}} of ${{EXPLORER_DATA.length.toLocaleString()}} loaded</span>`;
+  pagerHtml += `<button onclick="window.renderExplorer(${{EXPLORER_PAGE+1}})" ${{EXPLORER_PAGE>=totalPages-1?'disabled':''}}>›</button>`;
+  pagerHtml += ` <span style="font-size:.75rem;color:#888">Page ${{EXPLORER_PAGE+1}} of ${{totalPages}} (${{EXPLORER_TOTAL.toLocaleString()}} total)</span>`;
   document.getElementById('explorer-pager').innerHTML = pagerHtml;
-}}
-
-window.explorerPage = function(p) {{
-  const total = Math.ceil(EXPLORER_DATA.length / PAGE_SIZE);
-  if (p < 0 || p >= total) return;
-  EXPLORER_PAGE = p;
-  renderExplorerPage();
 }};
 
-window.downloadCSV = function() {{
-  if (!EXPLORER_DATA.length) return;
-  const cols = Object.keys(EXPLORER_DATA[0]);
-  const csv = [cols.join(','), ...EXPLORER_DATA.map(r=>cols.map(c=>JSON.stringify(r[c]??'')).join(','))].join('\\n');
+window.downloadCSV = async function() {{
+  const rows = await q(`
+    SELECT CAST(CASE_ID AS VARCHAR) as case_id, entry_queue, final_queue,
+      CAST(transfers AS INT) as transfers,
+      CAST(transfer_bin AS VARCHAR) as transfer_bin,
+      ROUND(total_active_aht, 0) as aht_min,
+      ROUND(routing_days, 1) as routing_days,
+      CAST(messages AS INT) as messages,
+      segment,
+      CAST(inhours AS INT) as inhours,
+      CAST(loop_flag AS INT) as loop_flag
+    FROM cases ${{EXPLORER_WHERE}} ORDER BY transfers DESC, total_active_aht DESC`);
+  if (!rows.length) return;
+  const cols = Object.keys(rows[0]);
+  const csv = [cols.join(','), ...rows.map(r=>cols.map(c=>JSON.stringify(r[c]??'')).join(','))].join('\\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv], {{type:'text/csv'}}));
   a.download = 'messenger_cases.csv'; a.click();
