@@ -82,6 +82,12 @@ def prepare_data(df):
         if case[col].dtype == object:
             case[col] = pd.to_datetime(case[col], errors="coerce")
 
+    # Derived time columns used by the heatmap tab
+    case["day_of_week"] = pd.to_datetime(case["created_at"], errors="coerce").dt.dayofweek
+    case["hour_of_day"] = pd.to_datetime(case["close_datetime"], errors="coerce").dt.hour
+    case["day_of_week"] = case["day_of_week"].fillna(0).astype(int)
+    case["hour_of_day"] = case["hour_of_day"].fillna(12).astype(int)
+
     return df, case
 
 
@@ -1161,11 +1167,12 @@ function drawSankey(divId, paths, cids, title) {{
   const allNodes = [...new Set(links.flatMap(l=>[l.s,l.t]))];
   const nodeIdx = Object.fromEntries(allNodes.map((n,i)=>[n,i]));
 
-  // Store link cids for click
-  const linkCidMap = links.map(l=>l.cids);
+  // Store link→case IDs by position index (not as customdata, which breaks Plotly.js Sankey)
+  const linkCidsByIdx = links.map(l=>l.cids);
 
   const trace = {{
     type:'sankey',
+    arrangement:'snap',
     node:{{pad:15,thickness:20,label:allNodes,
       color:allNodes.map((_,i)=>CHART_COLORS[i%CHART_COLORS.length])}},
     link:{{
@@ -1173,7 +1180,6 @@ function drawSankey(divId, paths, cids, title) {{
       target:links.map(l=>nodeIdx[l.t]),
       value:links.map(l=>l.cids.length),
       label:links.map(l=>l.cids.length+' cases'),
-      customdata:links.map(l=>l.cids),
     }},
   }};
 
@@ -1186,10 +1192,12 @@ function drawSankey(divId, paths, cids, title) {{
 
   div.on('plotly_click', function(data) {{
     const pt = data.points[0];
-    if (pt && pt.customdata) {{
-      const clickedCids = pt.customdata;
-      const linkLabel = allNodes[pt.source?.index||0]+' → '+allNodes[pt.target?.index||0];
-      showCaseModal(`${{clickedCids.length}} cases: ${{linkLabel}}`, clickedCids);
+    if (pt && typeof pt.pointNumber !== 'undefined') {{
+      const clickedCids = linkCidsByIdx[pt.pointNumber] || [];
+      if (!clickedCids.length) return;
+      const srcLabel = allNodes[pt.source] ?? '';
+      const tgtLabel = allNodes[pt.target] ?? '';
+      showCaseModal(`${{clickedCids.length}} cases: ${{srcLabel}} \u2192 ${{tgtLabel}}`, clickedCids);
     }}
   }});
 }}
