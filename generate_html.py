@@ -880,7 +880,7 @@ async function renderCost(f) {{
     }});
   }}
 
-  // Build per-box annotations: "Median: X\nMean: X" above each box
+  // Build per-box annotations: Median and Mean values above each box
   const ahtAnnotations = [], msgAnnotations = [];
   let binIdx = 0;
   for (const bin of bins) {{
@@ -1174,7 +1174,7 @@ window.renderQueueIntel = async function() {{
     ],
   }}, {{responsive:true}});
 
-  // Top 10 journey paths through selected queue
+  // Top 10 journey paths through selected queue (no LIST() — fetch case IDs on click)
   const pathRows = await q(`
     WITH case_paths AS (
       SELECT CASE_ID,
@@ -1186,20 +1186,44 @@ window.renderQueueIntel = async function() {{
       )
       GROUP BY CASE_ID
     )
-    SELECT full_path, COUNT(*) as n,
-      LIST(CAST(CASE_ID AS VARCHAR)) as cids
+    SELECT full_path, COUNT(*) as n
     FROM case_paths
     GROUP BY full_path ORDER BY n DESC LIMIT 10`);
 
-  let pathHtml = '<table class="table table-sm" style="font-size:.75rem;"><thead><tr><th>Path</th><th style="text-align:right">Cases</th></tr></thead><tbody>';
-  for (const row of pathRows) {{
-    const cidArr = row.cids || [];
-    pathHtml += `<tr style="cursor:pointer" onclick="showCaseModal('Path: ${{row.full_path.replace(/'/g,\\"\\\\'\\")}}',${{JSON.stringify(cidArr.map(String))}})">
-      <td style="word-break:break-word;">${{row.full_path}}</td>
-      <td style="text-align:right;font-weight:600;">${{row.n}}</td></tr>`;
+  // Build table via DOM to avoid any quote-escaping issues in onclick handlers
+  const pathContainer = document.getElementById('qi-paths-table');
+  if (!pathRows.length) {{
+    pathContainer.innerHTML = '<p class="text-muted">No data.</p>';
+  }} else {{
+    const tbl = document.createElement('table');
+    tbl.className = 'table table-sm';
+    tbl.style.fontSize = '.75rem';
+    tbl.innerHTML = '<thead><tr><th>Path</th><th style="text-align:right">Cases</th></tr></thead>';
+    const tbody = document.createElement('tbody');
+    for (const row of pathRows) {{
+      const fp = row.full_path;
+      const tr = document.createElement('tr');
+      tr.style.cursor = 'pointer';
+      tr.innerHTML = `<td style="word-break:break-word;">${{fp}}</td><td style="text-align:right;font-weight:600;">${{row.n}}</td>`;
+      tr.addEventListener('click', async () => {{
+        const fpSafe = fp.replace(/'/g, "''");
+        const caseRows = await q(`
+          WITH cp AS (
+            SELECT CASE_ID, STRING_AGG(QUEUE_NEW,' → ' ORDER BY QUEUE_ORDER) as full_path
+            FROM transitions
+            WHERE CASE_ID IN (SELECT DISTINCT CASE_ID FROM transitions WHERE QUEUE_NEW='${{qSafe}}'
+              AND CASE_ID IN (SELECT CASE_ID FROM cases c ${{wCases}}))
+            GROUP BY CASE_ID
+          )
+          SELECT CAST(CASE_ID AS VARCHAR) as cid FROM cp WHERE full_path='${{fpSafe}}'`);
+        showCaseModal('Path: ' + fp, caseRows.map(r => r.cid));
+      }});
+      tbody.appendChild(tr);
+    }}
+    tbl.appendChild(tbody);
+    pathContainer.innerHTML = '';
+    pathContainer.appendChild(tbl);
   }}
-  pathHtml += '</tbody></table>';
-  document.getElementById('qi-paths-table').innerHTML = pathRows.length ? pathHtml : '<p class="text-muted">No data.</p>';
 }};
 
 // ═══════════════════════════════════════════════════════
