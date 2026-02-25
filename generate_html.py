@@ -1187,29 +1187,42 @@ let COST_TRACE_BINS = [];   // ordered list of bins that got a trace (for curveN
 
 async function renderCost(f) {{
   const w = buildWhere(f);
-  const stats = await q(`
-    SELECT CASE WHEN transfers=0 THEN '0' WHEN transfers=1 THEN '1' WHEN transfers=2 THEN '2' ELSE '3+' END as transfer_bin,
-      QUANTILE_CONT(total_active_aht, 0.25) as q1,
-      MEDIAN(total_active_aht) as med,
-      QUANTILE_CONT(total_active_aht, 0.75) as q3,
-      QUANTILE_CONT(total_active_aht, 0.95) as p95,
-      AVG(total_active_aht) as mean_val, COUNT(*) as n,
-      QUANTILE_CONT(messages, 0.25) as mq1,
-      MEDIAN(messages) as mmed,
-      QUANTILE_CONT(messages, 0.75) as mq3,
-      QUANTILE_CONT(messages, 0.95) as mp95,
-      AVG(messages) as mmean
-    FROM cases ${{w}}
-    GROUP BY 1 ORDER BY MIN(transfers)`);
 
-  const baseline_aht = stats.find(r=>r.transfer_bin==='0');
-  const high_aht     = stats.find(r=>r.transfer_bin==='3+');
-  const aht_pct = baseline_aht && high_aht && baseline_aht.med > 0
-    ? ((high_aht.med / baseline_aht.med - 1) * 100) : 0;
-  const baseline_msg = stats.find(r=>r.transfer_bin==='0');
-  const high_msg = stats.find(r=>r.transfer_bin==='3+');
-  const msg_pct = baseline_msg && high_msg && baseline_msg.mmed > 0
-    ? ((high_msg.mmed / baseline_msg.mmed - 1) * 100) : 0;
+  // Fetch raw per-case values in one query.
+  // Using raw data (not pre-aggregated) so Plotly computes its own quartiles.
+  // Pre-aggregated mode had a silent bug: QUANTILE_CONT returns null for small
+  // bins → Math.min(value, null)=0 → upperfence<lowerfence → Plotly drops trace.
+  const rows = await q(`
+    SELECT CASE WHEN transfers=0 THEN '0' WHEN transfers=1 THEN '1' WHEN transfers=2 THEN '2' ELSE '3+' END as transfer_bin,
+      CAST(CASE_ID AS VARCHAR) as cid,
+      total_active_aht, messages
+    FROM cases ${{w}}`);
+
+  const bins = ['0','1','2','3+'];
+  const ahtByBin = {{'0':[],'1':[],'2':[],'3+':[]}};
+  const msgByBin = {{'0':[],'1':[],'2':[],'3+':[]}};
+  COST_BIN_CASES = {{}};
+  for (const r of rows) {{
+    const b = r.transfer_bin;
+    if (!b) continue;
+    if (r.total_active_aht != null) ahtByBin[b].push(Number(r.total_active_aht));
+    if (r.messages != null) msgByBin[b].push(Number(r.messages));
+    if (!COST_BIN_CASES[b]) COST_BIN_CASES[b] = [];
+    COST_BIN_CASES[b].push(r.cid);
+  }}
+  COST_TRACE_BINS = bins.filter(b => ahtByBin[b].length > 0);
+
+  // Compute median in JS for KPI values
+  function medArr(arr) {{
+    if (!arr.length) return 0;
+    const s = [...arr].sort((a,b)=>a-b);
+    const m = Math.floor(s.length/2);
+    return s.length%2 ? s[m] : (s[m-1]+s[m])/2;
+  }}
+  const base_aht = medArr(ahtByBin['0']), high_aht = medArr(ahtByBin['3+']);
+  const base_msg = medArr(msgByBin['0']), high_msg = medArr(msgByBin['3+']);
+  const aht_pct = base_aht > 0 ? (high_aht/base_aht - 1)*100 : 0;
+  const msg_pct = base_msg > 0 ? (high_msg/base_msg - 1)*100 : 0;
 
   document.getElementById('cost-guide-stmt').innerHTML =
     `Every transfer doesn't just delay the customer, <strong>it inflates the total effort.</strong>
@@ -1218,93 +1231,47 @@ async function renderCost(f) {{
      than one resolved first-touch. <strong>This is the compounding cost of mis-routing.</strong>`;
 
   document.getElementById('cost-kpis').innerHTML = [
-    kpiCard('AHT — First Touch', Math.round(baseline_aht?.med||0)+' min', 'kpi-success'),
-    kpiCard('AHT — 3+ Transfers', Math.round(high_aht?.med||0)+' min', 'kpi-danger'),
-    kpiCard('Messages — First Touch', Math.round(baseline_msg?.mmed||0), 'kpi-success'),
-    kpiCard('Messages — 3+ Transfers', Math.round(high_msg?.mmed||0), 'kpi-danger'),
+    kpiCard('AHT — First Touch', Math.round(base_aht)+' min', 'kpi-success'),
+    kpiCard('AHT — 3+ Transfers', Math.round(high_aht)+' min', 'kpi-danger'),
+    kpiCard('Messages — First Touch', Math.round(base_msg), 'kpi-success'),
+    kpiCard('Messages — 3+ Transfers', Math.round(high_msg), 'kpi-danger'),
   ].join('');
 
   document.getElementById('cost-insight').innerHTML =
     `Every additional transfer inflates handle time by ~${{Math.round(aht_pct/3)}}% per step
      and customer messages by ~${{Math.round(msg_pct/3)}}% per step.`;
 
-  // Build box traces
-  const bins = ['0','1','2','3+'];
+  // Box traces — raw y arrays, Plotly derives quartiles and whiskers itself
   const ahtTraces = [], msgTraces = [];
-
-  // Store bin cases for click
-  const binCases = await q(`
-    SELECT CASE WHEN transfers=0 THEN '0' WHEN transfers=1 THEN '1' WHEN transfers=2 THEN '2' ELSE '3+' END as transfer_bin,
-      CAST(CASE_ID AS VARCHAR) as cid
-    FROM cases ${{w}}`);
-  COST_BIN_CASES = {{}};
-  for (const r of binCases) {{
-    if (!COST_BIN_CASES[r.transfer_bin]) COST_BIN_CASES[r.transfer_bin] = [];
-    COST_BIN_CASES[r.transfer_bin].push(r.cid);
-  }}
-
-  COST_TRACE_BINS = [];
   for (const bin of bins) {{
-    const row = stats.find(r=>r.transfer_bin===bin);
-    if (!row) continue;
-    COST_TRACE_BINS.push(bin);
+    if (!ahtByBin[bin].length) continue;
     const label = bin + (bin==='1'?' transfer':' transfers');
-    const p95_aht = row.p95;
-    const iqr_aht = row.q3 - row.q1;
     const color = BIN_COLORS[bin];
-
     ahtTraces.push({{
-      type:'box', name:label,
-      q1:[row.q1], median:[row.med], q3:[row.q3], mean:[row.mean_val],
-      lowerfence:[Math.max(row.q1 - 1.5*iqr_aht, 0)],
-      upperfence:[Math.min(row.q3 + 1.5*iqr_aht, p95_aht)],
-      boxmean:true, fillcolor:color+'55', line:{{color}}, marker:{{color}},
+      type:'box', name:label, y:ahtByBin[bin],
+      boxmean:true, boxpoints:false,
+      marker:{{color}}, fillcolor:color+'55', line:{{color}},
     }});
-
-    const iqr_msg = row.mq3 - row.mq1;
     msgTraces.push({{
-      type:'box', name:label,
-      q1:[row.mq1], median:[row.mmed], q3:[row.mq3], mean:[row.mmean],
-      lowerfence:[Math.max(row.mq1 - 1.5*iqr_msg, 0)],
-      upperfence:[Math.min(row.mq3 + 1.5*iqr_msg, row.mp95)],
-      boxmean:true, fillcolor:color+'55', line:{{color}}, marker:{{color}},
+      type:'box', name:label, y:msgByBin[bin],
+      boxmean:true, boxpoints:false,
+      marker:{{color}}, fillcolor:color+'55', line:{{color}},
     }});
   }}
 
-  // Build per-box annotations: Median and Mean values above each box
-  const ahtAnnotations = [], msgAnnotations = [];
-  for (const bin of bins) {{
-    const row = stats.find(r=>r.transfer_bin===bin);
-    if (!row) continue;
-    const label = bin + (bin==='1'?' transfer':' transfers');
-    ahtAnnotations.push({{
-      x: label, y: row.q3 + (row.q3 - row.q1) * 0.3,
-      text: `Med: ${{Math.round(row.med)}}<br>Mean: ${{Math.round(row.mean_val)}}`,
-      showarrow: false, font: {{size:9, color:'#444'}},
-      align:'center', bgcolor:'rgba(255,255,255,0.7)', borderpad:2,
-    }});
-    msgAnnotations.push({{
-      x: label, y: row.mq3 + (row.mq3 - row.mq1) * 0.3,
-      text: `Med: ${{Math.round(row.mmed)}}<br>Mean: ${{Math.round(row.mmean)}}`,
-      showarrow: false, font: {{size:9, color:'#444'}},
-      align:'center', bgcolor:'rgba(255,255,255,0.7)', borderpad:2,
-    }});
-  }}
-
-  const boxLayout = (title, ytitle, annots) => ({{
+  const boxLayout = (title, ytitle) => ({{
     title, height:420, showlegend:false,
     paper_bgcolor:'transparent', plot_bgcolor:'transparent',
     yaxis:{{title:ytitle, showgrid:true, gridcolor:'#EDEBE9'}},
     xaxis:{{showgrid:false}}, margin:{{t:50,l:60,r:30,b:40}},
-    annotations: annots || [],
   }});
 
   const ahtDiv = document.getElementById('chart-aht-box');
-  Plotly.react(ahtDiv, ahtTraces, boxLayout('Handle Time by Transfer Count','AHT (min)', ahtAnnotations), {{responsive:true}});
+  Plotly.react(ahtDiv, ahtTraces, boxLayout('Handle Time by Transfer Count','AHT (min)'), {{responsive:true}});
   ahtDiv.on('plotly_click', data => showCostModal(data, 'AHT'));
 
   const msgDiv = document.getElementById('chart-msg-box');
-  Plotly.react(msgDiv, msgTraces, boxLayout('Customer Messages by Transfer Count','Messages', msgAnnotations), {{responsive:true}});
+  Plotly.react(msgDiv, msgTraces, boxLayout('Customer Messages by Transfer Count','Messages'), {{responsive:true}});
   msgDiv.on('plotly_click', data => showCostModal(data, 'Messages'));
 
   // Multiplier effect
