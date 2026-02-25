@@ -705,14 +705,15 @@ async function renderProcess(f) {{
   const w = buildWhere(f, 'c');
   const stats = await q(`SELECT COUNT(*) as total,
     AVG(CASE WHEN transfers=0 THEN 1.0 ELSE 0.0 END)*100 as drr,
-    AVG(loop_flag)*100 as loop_rate, SUM(loop_flag) as rework_cases,
+    AVG(CASE WHEN loop_flag>0 THEN 1.0 ELSE 0.0 END)*100 as loop_rate,
+    COUNT(*) FILTER (WHERE loop_flag > 0) as rework_cases,
     AVG(CASE WHEN transfers>=2 THEN 1.0 ELSE 0.0 END)*100 as multi_rate
     FROM cases c ${{w}}`);
   const d = stats[0] || {{}};
   document.getElementById('process-kpis').innerHTML = [
     kpiCard('Direct Resolution Rate', (d.drr||0).toFixed(1)+'%', 'kpi-success'),
     kpiCard('Loop / Rework Rate', (d.loop_rate||0).toFixed(1)+'%', 'kpi-danger'),
-    kpiCard('Cases with Rework', (d.rework_cases||0).toLocaleString(), 'kpi-warning'),
+    kpiCard('Cases with Rework', Math.round(Number(d.rework_cases)||0).toLocaleString(), 'kpi-warning'),
     kpiCard('Multi-Transfer Rate', (d.multi_rate||0).toFixed(1)+'%', 'kpi-info'),
   ].join('');
 
