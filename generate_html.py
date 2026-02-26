@@ -254,6 +254,17 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
   font-family:'Courier New',monospace;font-size:.73rem;color:#444;margin:.4rem 0;display:inline-block;}}
 .def-card .def-body{{font-size:.8rem;color:#444;line-height:1.6;}}
 .def-card .def-example{{font-size:.75rem;color:#107C10;font-style:italic;margin-top:.3rem;}}
+/* ── Fixed 4Cs callout ── */
+#fcs-callout{{position:fixed;bottom:1.5rem;right:1.5rem;z-index:1050;
+  background:linear-gradient(135deg,#fff8e1,#fff3cd);border:1.5px solid #FFB900;
+  border-radius:8px;padding:.55rem 1rem;font-size:.78rem;color:#5a4000;
+  display:flex;align-items:center;gap:.6rem;
+  box-shadow:0 3px 12px rgba(255,185,0,.4);white-space:nowrap;}}
+/* ── Date slider ── */
+input[type=range]{{-webkit-appearance:none;appearance:none;height:4px;border-radius:2px;
+  background:#C8C6C4;outline:none;}}
+input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:14px;height:14px;
+  border-radius:50%;background:var(--pbi-blue);cursor:pointer;}}
 </style>
 </head>
 <body>
@@ -284,6 +295,13 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
         <input type="date" id="f-start" value="{min_date}">
         <input type="date" id="f-end" value="{max_date}">
       </div>
+      <div class="d-flex gap-1 mt-1" style="align-items:center;">
+        <input type="range" id="f-start-slider" min="0" max="0" value="0"
+          oninput="updateDateFromSlider('start',this.value)" style="flex:1;height:4px;">
+        <input type="range" id="f-end-slider" min="0" max="0" value="0"
+          oninput="updateDateFromSlider('end',this.value)" style="flex:1;height:4px;">
+      </div>
+      <div id="f-slider-label" style="font-size:.62rem;color:#888;margin-top:.2rem;text-align:center;"></div>
     </div>
     <div class="col-md-3">
       <div class="filter-label">Entry Queue</div>
@@ -291,6 +309,10 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
     </div>
     <div class="col-md-2">
       <div class="filter-label">Hours</div>
+      <div class="d-flex gap-1 mb-1">
+        <button onclick="setHours('1')" class="toggle-btn" style="flex:1;font-size:.72rem;">In-Hours</button>
+        <button onclick="setHours('0')" class="toggle-btn" style="flex:1;font-size:.72rem;">Out-of-Hours</button>
+      </div>
       <select id="f-hours" multiple>
         <option value="1" selected>In-Hours</option>
         <option value="0" selected>Out-of-Hours</option>
@@ -319,9 +341,8 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
   <button class="tab-btn active" onclick="switchTab('overview',this)">Overview</button>
   <button class="tab-btn" onclick="switchTab('process',this)">Process &amp; Routing</button>
   <button class="tab-btn" onclick="switchTab('cost',this)">Cost &amp; Effort</button>
-  <button class="tab-btn" onclick="switchTab('hours',this)">Hours &amp; Transfer</button>
+  <button class="tab-btn" onclick="switchTab('hours',this)">Heatmaps</button>
   <button class="tab-btn" onclick="switchTab('queue',this)">Queue Intelligence</button>
-  <button class="tab-btn" onclick="switchTab('journey',this)">Journey Pathways</button>
   <button class="tab-btn" onclick="switchTab('explorer',this)">Data Explorer</button>
   <button class="tab-btn" onclick="switchTab('definitions',this)">Definitions</button>
 </div>
@@ -331,21 +352,6 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
 
   <!-- ── TAB 1: OVERVIEW ── -->
   <div id="tab-overview" class="tab-panel active">
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:1.2rem;">
-      <div>
-        <h5 style="margin:0;font-weight:800;color:#201F1E;font-size:1.05rem;">Messenger Transfer Analytics</h5>
-        <div style="font-size:.78rem;color:#888;margin-top:.15rem;">Built by <strong style="color:#0078D4;">Hamzah Javaid</strong> &nbsp;·&nbsp; Hastings Direct</div>
-      </div>
-      <div id="fcs-callout" style="background:linear-gradient(135deg,#fff8e1,#fff3cd);border:1.5px solid #FFB900;
-        border-radius:8px;padding:.55rem 1rem;font-size:.78rem;color:#5a4000;display:flex;align-items:center;gap:.6rem;
-        box-shadow:0 1px 4px rgba(255,185,0,.2);white-space:nowrap;">
-        ⭐ Found this useful?
-        <a id="fcs-link" href="#" target="_blank" rel="noopener"
-          style="font-weight:700;color:#B8860B;text-decoration:none;border-bottom:1px solid #B8860B;">
-          Submit a 4Cs nomination
-        </a>
-      </div>
-    </div>
     <div class="guide-stmt">
       <strong>This report quantifies the cost of mis-routing in Messenger.</strong>
       Every transfer that could have been avoided represents wasted agent time, customer frustration,
@@ -361,6 +367,42 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
         <div id="chart-ov-segment"></div>
         <div class="chart-insight">Volume split between Retail and Claims. Use the Segment filter above to isolate one line of business and compare transfer behaviour across segments.</div>
       </div></div>
+    </div>
+
+    <!-- ── Journey Pathways (embedded in Overview) ── -->
+    <hr style="margin:1.5rem 0;border-color:#C8C6C4;">
+    <h5 style="font-weight:800;color:#201F1E;font-size:.95rem;margin-bottom:.8rem;">Journey Pathways</h5>
+    <div class="guide-stmt" style="margin-bottom:1rem;">
+      <strong>The shortest path to resolution is the cheapest one.</strong>
+      This section maps how Messenger cases actually flow through the business.
+      Every extra hop on the journey is time, effort, and customer patience burned.
+    </div>
+    <div class="row g-2 mb-3">
+      <div class="col-md-4">
+        <div class="filter-label">Select Queue to Analyse</div>
+        <select id="journey-queue-select" class="form-select form-select-sm" onchange="renderJourney()"></select>
+      </div>
+      <div class="col-md-2">
+        <div class="filter-label">Depth</div>
+        <select id="journey-depth" class="form-select form-select-sm" onchange="renderJourney()">
+          <option value="2">2</option><option value="3" selected>3</option>
+          <option value="4">4</option><option value="5">5</option>
+        </select>
+      </div>
+    </div>
+    <div class="row g-3" id="journey-kpis"></div>
+    <div id="journey-avoidable" class="insight-card" style="display:none;"></div>
+    <div class="chart-card mt-2">
+      <div id="chart-sankey-fwd"></div>
+      <div class="chart-insight">Band width = number of cases flowing along that path. Thicker bands are the dominant routing patterns. Click any band to see the individual cases behind that flow. Queues that appear as large hubs with many outbound paths are routing bottlenecks.</div>
+    </div>
+    <div class="chart-card mt-2">
+      <div id="chart-sankey-bwd"></div>
+      <div class="chart-insight">The reverse view — tracing backwards from the selected queue. Shows which upstream routing decisions led to cases arriving here. Repeated upstream queues suggest a systematic mis-route that could be corrected at source.</div>
+    </div>
+    <div class="mt-2">
+      <h6 style="font-weight:700;">Top 10 Complete Paths <small class="text-muted">(click row for case detail)</small></h6>
+      <div id="journey-path-table"></div>
     </div>
   </div>
 
@@ -461,43 +503,7 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
     </div>
   </div>
 
-  <!-- ── TAB 6: JOURNEY PATHWAYS ── -->
-  <div id="tab-journey" class="tab-panel">
-    <div class="guide-stmt">
-      <strong>The shortest path to resolution is the cheapest one.</strong>
-      This tab maps how Messenger cases actually flow through the business.
-      Every extra hop on the journey is time, effort, and customer patience burned.
-    </div>
-    <div class="row g-2 mb-3">
-      <div class="col-md-4">
-        <div class="filter-label">Select Queue to Analyse</div>
-        <select id="journey-queue-select" class="form-select form-select-sm" onchange="renderJourney()"></select>
-      </div>
-      <div class="col-md-2">
-        <div class="filter-label">Depth</div>
-        <select id="journey-depth" class="form-select form-select-sm" onchange="renderJourney()">
-          <option value="2">2</option><option value="3" selected>3</option>
-          <option value="4">4</option><option value="5">5</option>
-        </select>
-      </div>
-    </div>
-    <div class="row g-3" id="journey-kpis"></div>
-    <div id="journey-avoidable" class="insight-card" style="display:none;"></div>
-    <div class="chart-card mt-2">
-      <div id="chart-sankey-fwd"></div>
-      <div class="chart-insight">Band width = number of cases flowing along that path. Thicker bands are the dominant routing patterns. Click any band to see the individual cases behind that flow. Queues that appear as large hubs with many outbound paths are routing bottlenecks.</div>
-    </div>
-    <div class="chart-card mt-2">
-      <div id="chart-sankey-bwd"></div>
-      <div class="chart-insight">The reverse view — tracing backwards from the selected queue. Shows which upstream routing decisions led to cases arriving here. Repeated upstream queues suggest a systematic mis-route that could be corrected at source.</div>
-    </div>
-    <div class="mt-2">
-      <h6 style="font-weight:700;">Top 10 Complete Paths <small class="text-muted">(click row for case detail)</small></h6>
-      <div id="journey-path-table"></div>
-    </div>
-  </div>
-
-  <!-- ── TAB 7: DATA EXPLORER ── -->
+  <!-- ── TAB 6: DATA EXPLORER ── -->
   <div id="tab-explorer" class="tab-panel">
     <div class="guide-stmt">
       <strong>Everything in this report is built from the data below.</strong>
@@ -999,7 +1005,6 @@ window.switchTab = function(tab, btn) {{
   else if (tab === 'cost')    renderCost(f);
   else if (tab === 'hours')   renderHeatmap(f);
   else if (tab === 'queue')   renderQueueIntel();
-  else if (tab === 'journey') renderJourney();
   else if (tab === 'explorer') renderExplorer();
 }};
 
@@ -1015,7 +1020,6 @@ window.applyFilters = async function() {{
   else if (tabId === 'cost')    renderCost(f);
   else if (tabId === 'hours')   renderHeatmap(f);
   else if (tabId === 'queue')   renderQueueIntel();
-  else if (tabId === 'journey') renderJourney();
   else if (tabId === 'explorer') renderExplorer();
 }};
 
@@ -1035,6 +1039,58 @@ window.setSegment = function(seg) {{
   applyFilters();
 }};
 
+window.setHours = function(h) {{
+  const hSel = document.getElementById('f-hours');
+  Array.from(hSel.options).forEach(o => o.selected = (o.value === h));
+  applyFilters();
+}};
+
+// Date range slider helpers
+function updateDateFromSlider(which, idx) {{
+  const i = parseInt(idx);
+  const m = MONTHS[i];
+  if (!m) return;
+  const startSlider = document.getElementById('f-start-slider');
+  const endSlider   = document.getElementById('f-end-slider');
+  if (which === 'start') {{
+    if (i > parseInt(endSlider.value)) {{ endSlider.value = i; }}
+    document.getElementById('f-start').value = m + '-01';
+    document.getElementById('f-end').value = getMonthEnd(MONTHS[parseInt(endSlider.value)]);
+  }} else {{
+    if (i < parseInt(startSlider.value)) {{ startSlider.value = i; }}
+    document.getElementById('f-end').value = getMonthEnd(m);
+    document.getElementById('f-start').value = MONTHS[parseInt(startSlider.value)] + '-01';
+  }}
+  updateSliderLabel();
+}}
+
+function getMonthEnd(m) {{
+  if (!m) return '';
+  const [y, mo] = m.split('-').map(Number);
+  const d = new Date(y, mo, 0);
+  return m + '-' + String(d.getDate()).padStart(2, '0');
+}}
+
+function updateSliderLabel() {{
+  const si = parseInt(document.getElementById('f-start-slider')?.value || 0);
+  const ei = parseInt(document.getElementById('f-end-slider')?.value || 0);
+  const sm = MONTHS[si] || '', em = MONTHS[ei] || '';
+  const label = document.getElementById('f-slider-label');
+  if (label) label.textContent = sm + ' → ' + em;
+}}
+
+// Initialise sliders once MONTHS is available
+(function initSliders() {{
+  const n = MONTHS.length - 1;
+  const ss = document.getElementById('f-start-slider');
+  const es = document.getElementById('f-end-slider');
+  if (ss && es && n >= 0) {{
+    ss.max = n; ss.value = 0;
+    es.max = n; es.value = n;
+    updateSliderLabel();
+  }}
+}})();
+
 // ═══════════════════════════════════════════════════════
 // KPI HELPERS
 // ═══════════════════════════════════════════════════════
@@ -1051,8 +1107,6 @@ async function renderOverview(f) {{
   const rows = await q(`
     SELECT COUNT(*) as total,
       AVG(CASE WHEN transfers=0 THEN 1.0 ELSE 0 END)*100 as drr,
-      AVG(transfers) as avg_xfer,
-      MEDIAN(total_active_aht) as med_aht,
       AVG(CASE WHEN transfers>=2 THEN 1.0 ELSE 0 END)*100 as multi_rate,
       AVG(loop_flag)*100 as loop_rate
     FROM cases ${{w}}`);
@@ -1062,8 +1116,6 @@ async function renderOverview(f) {{
   document.getElementById('overview-kpis').innerHTML = [
     kpiCard('Total Cases', n, 'kpi-primary'),
     kpiCard('Direct Resolution Rate', (d.drr||0).toFixed(1)+'%', 'kpi-success'),
-    kpiCard('Avg Transfers', (d.avg_xfer||0).toFixed(2), 'kpi-warning'),
-    kpiCard('Median AHT', Math.round(d.med_aht||0)+' min', 'kpi-purple'),
     kpiCard('Multi-Transfer Rate', (d.multi_rate||0).toFixed(1)+'%', 'kpi-danger'),
     kpiCard('Loop Rate', (d.loop_rate||0).toFixed(1)+'%', 'kpi-info'),
   ].join('');
@@ -1102,6 +1154,9 @@ async function renderOverview(f) {{
     title:'Cases by Segment', height:320, margin:{{t:50,l:20,r:20,b:20}},
     paper_bgcolor:'transparent',
   }}, {{responsive:true}});
+
+  // Journey Pathways is embedded in Overview tab — render it too
+  renderJourney();
 }}
 
 // ═══════════════════════════════════════════════════════
@@ -1233,12 +1288,13 @@ async function renderCost(f) {{
   }}
   COST_TRACE_BINS = bins.filter(b => ahtByBin[b].length > 0);
 
-  // Quartile helpers — computed in JS so we always get real numbers (no SQL null risk)
+  // JS stat helpers — no SQL null risk
   const jsSort = arr => [...arr].sort((a,b)=>a-b);
-  const jsQ1  = arr => {{ const s=jsSort(arr); return s[Math.floor(s.length/4)]; }};
-  const jsMed = arr => {{ if(!arr.length)return 0; const s=jsSort(arr),m=Math.floor(s.length/2); return s.length%2?s[m]:(s[m-1]+s[m])/2; }};
-  const jsQ3  = arr => {{ const s=jsSort(arr); return s[Math.floor(s.length*3/4)]; }};
-  const jsMean= arr => arr.reduce((s,v)=>s+v,0)/arr.length;
+  const jsQ1   = arr => {{ const s=jsSort(arr); return s[Math.floor(s.length/4)]; }};
+  const jsMed  = arr => {{ if(!arr.length)return 0; const s=jsSort(arr),m=Math.floor(s.length/2); return s.length%2?s[m]:(s[m-1]+s[m])/2; }};
+  const jsQ3   = arr => {{ const s=jsSort(arr); return s[Math.floor(s.length*3/4)]; }};
+  const jsMean = arr => arr.reduce((s,v)=>s+v,0)/arr.length;
+  const jsP95  = arr => {{ const s=jsSort(arr); return s[Math.min(Math.floor(s.length*0.95), s.length-1)]; }};
 
   const base_aht = jsMed(ahtByBin['0']), high_aht = jsMed(ahtByBin['3+']);
   const base_msg = jsMed(msgByBin['0']), high_msg = jsMed(msgByBin['3+']);
@@ -1262,9 +1318,10 @@ async function renderCost(f) {{
     `Every additional transfer inflates handle time by ~${{Math.round(aht_pct/3)}}% per step
      and customer messages by ~${{Math.round(msg_pct/3)}}% per step.`;
 
-  // Pre-aggregated box traces: whiskers collapsed to box edges (no outlier distortion),
-  // quartiles self-computed in JS so no SQL null risk.
-  // whiskerwidth:0 removes the horizontal cap lines; annotations label median & mean.
+  // Raw-data box traces with P95 cap to tame extreme outliers.
+  // Values above the P95 for each bin are excluded before being passed to Plotly.
+  // Plotly then computes quartiles + whiskers from the filtered arrays itself.
+  // Annotations label median & mean for quick comparison.
   const ahtTraces = [], msgTraces = [];
   const ahtAnnotations = [], msgAnnotations = [];
 
@@ -1273,35 +1330,40 @@ async function renderCost(f) {{
     const label = bin + (bin==='1'?' transfer':' transfers');
     const color = BIN_COLORS[bin];
 
-    const aq1=jsQ1(ahtByBin[bin]), amed=jsMed(ahtByBin[bin]),
-          aq3=jsQ3(ahtByBin[bin]), amean=jsMean(ahtByBin[bin]);
-    const mq1=jsQ1(msgByBin[bin]), mmed=jsMed(msgByBin[bin]),
-          mq3=jsQ3(msgByBin[bin]), mmean=jsMean(msgByBin[bin]);
+    // Filter each bin to values ≤ P95 to remove extreme tail outliers
+    const p95a = jsP95(ahtByBin[bin]);
+    const filtAht = ahtByBin[bin].filter(v => v <= p95a);
+    const p95m = jsP95(msgByBin[bin]);
+    const filtMsg = msgByBin[bin].filter(v => v <= p95m);
 
+    const amed=jsMed(filtAht), amean=filtAht.length?jsMean(filtAht):0;
+    const aq3=jsQ3(filtAht);
+    const mmed=jsMed(filtMsg), mmean=filtMsg.length?jsMean(filtMsg):0;
+    const mq3=jsQ3(filtMsg);
+
+    // Pass raw (filtered) y arrays — Plotly computes quartiles + whiskers
     ahtTraces.push({{
       type:'box', name:label,
-      q1:[aq1], median:[amed], q3:[aq3], mean:[amean],
-      lowerfence:[aq1], upperfence:[aq3],
-      whiskerwidth:0, boxmean:true,
-      fillcolor:color+'55', line:{{color}}, marker:{{color}},
+      y:filtAht, boxmean:true,
+      fillcolor:color+'55', line:{{color}},
+      marker:{{color, opacity:0.5, size:3}},
     }});
     msgTraces.push({{
       type:'box', name:label,
-      q1:[mq1], median:[mmed], q3:[mq3], mean:[mmean],
-      lowerfence:[mq1], upperfence:[mq3],
-      whiskerwidth:0, boxmean:true,
-      fillcolor:color+'55', line:{{color}}, marker:{{color}},
+      y:filtMsg, boxmean:true,
+      fillcolor:color+'55', line:{{color}},
+      marker:{{color, opacity:0.5, size:3}},
     }});
 
-    // Annotation above each box: anchored at Q3 so it clears the top of the box
-    const aOffset = Math.max((aq3-aq1)*0.25, aq3*0.05, 1);
+    // Annotations above each box
+    const aOffset = Math.max(aq3*0.08, 1);
     ahtAnnotations.push({{
       x:label, y:aq3+aOffset, yanchor:'bottom',
       text:`Med <b>${{Math.round(amed)}}</b> | Mean <b>${{Math.round(amean)}}</b>`,
       showarrow:false, font:{{size:9,color:'#333'}},
       bgcolor:'rgba(255,255,255,0.88)', borderpad:3,
     }});
-    const mOffset = Math.max((mq3-mq1)*0.25, mq3*0.05, 0.5);
+    const mOffset = Math.max(mq3*0.08, 0.5);
     msgAnnotations.push({{
       x:label, y:mq3+mOffset, yanchor:'bottom',
       text:`Med <b>${{Math.round(mmed)}}</b> | Mean <b>${{Math.round(mmean)}}</b>`,
@@ -1310,12 +1372,18 @@ async function renderCost(f) {{
     }});
   }}
 
+  const p95Note = {{
+    xref:'paper', yref:'paper', x:1, y:-0.07,
+    text:'<i>Values above the 95th percentile per group excluded for visual clarity</i>',
+    showarrow:false, font:{{size:8.5, color:'#888'}}, xanchor:'right',
+  }};
+
   const boxLayout = (title, ytitle, annots) => ({{
     title, height:420, showlegend:false,
     paper_bgcolor:'transparent', plot_bgcolor:'transparent',
     yaxis:{{title:ytitle, showgrid:true, gridcolor:'#EDEBE9', rangemode:'tozero'}},
-    xaxis:{{showgrid:false}}, margin:{{t:50,l:60,r:30,b:40}},
-    annotations: annots,
+    xaxis:{{showgrid:false}}, margin:{{t:50,l:60,r:30,b:55}},
+    annotations: [...annots, p95Note],
   }});
 
   const ahtDiv = document.getElementById('chart-aht-box');
@@ -2097,6 +2165,15 @@ initDB().catch(err => {{
   console.error(err);
 }});
 </script>
+
+<!-- FIXED 4Cs CALLOUT (visible on all tabs) -->
+<div id="fcs-callout">
+  ⭐ Found this useful?
+  <a id="fcs-link" href="#" target="_blank" rel="noopener"
+    style="font-weight:700;color:#B8860B;text-decoration:none;border-bottom:1px solid #B8860B;">
+    Submit a 4Cs nomination
+  </a>
+</div>
 
 <!-- FOOTER -->
 <div style="background:#1a1a2e;color:rgba(255,255,255,.45);font-size:.72rem;
