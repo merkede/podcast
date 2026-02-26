@@ -84,7 +84,7 @@ def prepare_data(df):
 
     # Derived time columns used by the heatmap tab
     case["day_of_week"] = pd.to_datetime(case["created_at"], errors="coerce").dt.dayofweek
-    case["hour_of_day"] = pd.to_datetime(case["close_datetime"], errors="coerce").dt.hour
+    case["hour_of_day"] = pd.to_datetime(case["created_at"], errors="coerce").dt.hour
     case["day_of_week"] = case["day_of_week"].fillna(0).astype(int)
     case["hour_of_day"] = case["hour_of_day"].fillna(12).astype(int)
 
