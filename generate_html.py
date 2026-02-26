@@ -284,7 +284,8 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:14px;heig
 
 <!-- HEADER -->
 <div class="hd-header">
-  <div class="hd-logo">H</div>
+  <img src="hastings_logo.svg" alt="Hastings Direct" height="44"
+       style="object-fit:contain;display:block;">
   <div>
     <div class="hd-title">Messenger Transfer Analytics &nbsp;|&nbsp; Hastings Direct</div>
     <div class="hd-title" style="opacity:.7;margin-top:.15rem;">by Hamzah Javaid</div>
@@ -358,11 +359,6 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:14px;heig
 
   <!-- ── TAB 1: OVERVIEW ── -->
   <div id="tab-overview" class="tab-panel active">
-    <div class="guide-stmt">
-      <strong>This report quantifies the cost of mis-routing in Messenger.</strong>
-      Every transfer that could have been avoided represents wasted agent time, customer frustration,
-      and compounding operational cost. Use the filters above to slice by date, queue, hours, and segment.
-    </div>
     <div class="row g-3" id="overview-kpis"></div>
 
     <!-- ── Journey Pathways (embedded in Overview) ── -->
@@ -375,11 +371,11 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:14px;heig
     </div>
     <div class="row g-2 mb-3">
       <div class="col-md-4">
-        <div class="filter-label">Select Queue to Analyse</div>
+        <div class="filter-label">Select a Queue</div>
         <select id="journey-queue-select" class="form-select form-select-sm" onchange="renderJourney()"></select>
       </div>
       <div class="col-md-2">
-        <div class="filter-label">Depth</div>
+        <div class="filter-label">Number of Transfers</div>
         <select id="journey-depth" class="form-select form-select-sm" onchange="renderJourney()">
           <option value="2">2</option><option value="3" selected>3</option>
           <option value="4">4</option><option value="5">5</option>
@@ -407,7 +403,7 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:14px;heig
     <div class="guide-stmt">
       <strong>Not all queues add value, some just add delay.</strong>
       The intermediary queues shown here are where Messenger cases sit waiting between handoffs,
-      contributing nothing to resolution. If a queue appears frequently in the Pareto,
+      contributing nothing to resolution. If a queue appears frequently in the Pareto Distribution,
       it's either a structural bottleneck or a sign that cases are being sent there by mistake.
     </div>
     <div class="row g-3" id="process-kpis"></div>
@@ -442,7 +438,6 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:14px;heig
 
   <!-- ── TAB 4: HEATMAPS ── -->
   <div id="tab-hours" class="tab-panel">
-    <div class="row g-3" id="hours-kpis"></div>
     <div class="toggle-group" id="heatmap-toggles">
       <button class="toggle-btn active" onclick="setHeatmapView('volume',this)">Transfer Volume</button>
       <button class="toggle-btn" onclick="setHeatmapView('aht',this)">Median AHT</button>
@@ -526,316 +521,196 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:14px;heig
 
   <!-- ── TAB 8: DEFINITIONS ── -->
   <div id="tab-definitions" class="tab-panel">
-    <div class="guide-stmt">
-      <strong>Every metric in this report has a precise, consistent definition.</strong>
-      This tab explains what each figure measures, how it is calculated, and what it means for the business.
-      All calculations are performed on the underlying case and queue-step data — no estimates or sampling.
-    </div>
+    <table class="table data-table table-bordered table-sm" style="font-size:.82rem;background:#fff;">
+      <thead>
+        <tr>
+          <th style="width:22%;background:#1a1a2e;">Term</th>
+          <th style="width:52%;background:#1a1a2e;">Definition</th>
+          <th style="width:26%;background:#1a1a2e;">Formula / Calculation</th>
+        </tr>
+      </thead>
+      <tbody>
+        <!-- ── Case & Queue Concepts ── -->
+        <tr style="background:#EBF3FB;">
+          <td colspan="3" style="font-weight:800;font-size:.72rem;text-transform:uppercase;
+            letter-spacing:.5px;color:#0078D4;padding:6px 10px;border-color:#BDD7F0;">
+            Case &amp; Queue Concepts
+          </td>
+        </tr>
+        <tr>
+          <td><strong>Case</strong></td>
+          <td>A single customer contact opened in Messenger. One case may pass through multiple queues before it is closed. Each case has a unique Case ID and a recorded open and close time.</td>
+          <td class="text-muted">—</td>
+        </tr>
+        <tr>
+          <td><strong>Queue</strong></td>
+          <td>A work-pool to which a case is assigned. When an agent cannot resolve the case, they transfer it to a different queue. The sequence of queues a case visits forms its <em>journey</em>.</td>
+          <td class="text-muted">—</td>
+        </tr>
+        <tr>
+          <td><strong>Transfer</strong></td>
+          <td>Every time a case moves from one queue to another counts as one transfer. A case that is opened and closed in the same queue has 0 transfers — a perfect first-touch resolution.</td>
+          <td><code>transfers = queues visited − 1</code></td>
+        </tr>
+        <tr>
+          <td><strong>Entry Queue</strong></td>
+          <td>The <em>first</em> queue a case enters after being opened in Messenger — the team that receives the initial customer contact and decides how to route it.</td>
+          <td class="text-muted">—</td>
+        </tr>
+        <tr>
+          <td><strong>Final Queue</strong></td>
+          <td>The <em>last</em> queue a case was in when it was closed — the team that ultimately resolved the customer contact, regardless of transfers before reaching them.</td>
+          <td class="text-muted">—</td>
+        </tr>
+        <tr>
+          <td><strong>Intermediary Queue</strong></td>
+          <td>Any queue a case passes through that is neither entry nor final. Time spent here is pure routing delay — the customer is waiting but no resolution is being reached.</td>
+          <td class="text-muted">—</td>
+        </tr>
 
-    <!-- ═══════════ SECTION 1: CASE CONCEPTS ═══════════ -->
-    <div class="def-section-title">Case &amp; Queue Concepts</div>
-    <div class="row g-3">
-      <div class="col-md-4">
-        <div class="def-card primary">
-          <div class="def-term">Case</div>
-          <div class="def-body">A single customer contact opened in Messenger. One case may pass through multiple
-          queues before it is closed. Each case has a unique Case ID and a recorded open and close time.</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card primary">
-          <div class="def-term">Queue</div>
-          <div class="def-body">A work-pool to which a case is assigned. When an agent cannot resolve the
-          case, they transfer it to a different queue. The sequence of queues a case visits forms its
-          <em>journey</em>.</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card primary">
-          <div class="def-term">Transfer</div>
-          <div class="def-body">Every time a case moves from one queue to another counts as one transfer.
-          A case that is opened and closed in the same queue has <strong>0 transfers</strong> — a perfect
-          first-touch resolution.</div>
-          <div class="def-formula">transfers = number of queues visited − 1</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card primary">
-          <div class="def-term">Entry Queue</div>
-          <div class="def-body">The <em>first</em> queue a case enters after being opened in Messenger.
-          This is the team that receives the initial customer contact and decides how to route it.</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card primary">
-          <div class="def-term">Final Queue</div>
-          <div class="def-body">The <em>last</em> queue a case was in when it was closed. This is the team
-          that ultimately resolved the customer contact, regardless of how many transfers occurred before
-          reaching them.</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card primary">
-          <div class="def-term">Intermediary Queue</div>
-          <div class="def-body">Any queue a case passes through that is neither the entry nor the final queue.
-          Time spent in intermediary queues is pure routing delay — the customer is waiting but no resolution
-          is being reached.</div>
-        </div>
-      </div>
-    </div>
+        <!-- ── Resolution & Routing Metrics ── -->
+        <tr style="background:#EBF3FB;">
+          <td colspan="3" style="font-weight:800;font-size:.72rem;text-transform:uppercase;
+            letter-spacing:.5px;color:#0078D4;padding:6px 10px;border-color:#BDD7F0;">
+            Resolution &amp; Routing Metrics
+          </td>
+        </tr>
+        <tr>
+          <td><strong>Direct Resolution Rate (DRR) / First-Touch Resolution (FTR)</strong></td>
+          <td>The percentage of cases closed by the entry queue without any Messenger transfer. A DRR of 70% means 3 in 10 cases needed at least one transfer.</td>
+          <td><code>(cases with 0 transfers ÷ total cases) × 100</code><br><span style="font-size:.75rem;color:#107C10;">Example: 420/600 = 70% DRR</span></td>
+        </tr>
+        <tr>
+          <td><strong>Multi-Transfer Rate</strong></td>
+          <td>The percentage of cases transferred <em>two or more times</em>. These represent the most severe mis-routing — bouncing through multiple queues before reaching the right team.</td>
+          <td><code>(cases with 2+ transfers ÷ total cases) × 100</code></td>
+        </tr>
+        <tr>
+          <td><strong>Transfer Groups (0 / 1 / 2 / 3+)</strong></td>
+          <td>Cases grouped into four buckets for chart comparisons. The 3+ group captures all cases with three or more transfers, which consistently shows the highest cost and effort.</td>
+          <td><code>0 = direct &nbsp;| 1 = one &nbsp;| 2 = two &nbsp;| 3+ = three+</code></td>
+        </tr>
+        <tr>
+          <td><strong>Loop / Rework Rate</strong></td>
+          <td>A loop occurs when a case visits the same queue more than once — it was sent back to a queue that had already seen it. Every loop is an avoidable transfer.</td>
+          <td><code>(cases with repeated queue visit ÷ total) × 100</code><br><span style="font-size:.75rem;color:#107C10;">Example: A → B → A = 1 loop</span></td>
+        </tr>
+        <tr>
+          <td><strong>Routing Days</strong></td>
+          <td>Total calendar days a case spent in transit between queues — time in all queues <em>except</em> the final resolving queue. A first-touch case has 0 routing days.</td>
+          <td><code>SUM(DAYS_IN_QUEUE) excluding final queue</code></td>
+        </tr>
+        <tr>
+          <td><strong>Dwell Days</strong></td>
+          <td>Time a case spent inside one specific queue, from arrival to departure. Shown as median and P90. Long dwell times indicate capacity constraints or process delays within that queue.</td>
+          <td><code>DAYS_IN_QUEUE for one queue step</code></td>
+        </tr>
 
-    <!-- ═══════════ SECTION 2: RESOLUTION METRICS ═══════════ -->
-    <div class="def-section-title">Resolution &amp; Routing Metrics</div>
-    <div class="row g-3">
-      <div class="col-md-4">
-        <div class="def-card success">
-          <div class="def-term">Direct Resolution Rate (DRR) / First-Touch Resolution (FTR)</div>
-          <div class="def-body">The percentage of cases closed by the entry queue without any transfer.
-          The higher this figure, the better the initial routing is working.
-          A DRR of 70% means 3 in 10 cases needed to be transferred at least once.</div>
-          <div class="def-formula">DRR = (cases with 0 transfers ÷ total cases) × 100</div>
-          <div class="def-example">Example: 420 direct resolutions out of 600 cases = 70% DRR</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card danger">
-          <div class="def-term">Multi-Transfer Rate</div>
-          <div class="def-body">The percentage of cases that were transferred <em>two or more times</em>.
-          These cases represent the most severe mis-routing — bouncing through multiple queues before
-          reaching the right team. Each additional transfer multiplies cost and delays resolution.</div>
-          <div class="def-formula">Multi-Transfer Rate = (cases with 2+ transfers ÷ total cases) × 100</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card warning">
-          <div class="def-term">Transfer Groups (0 / 1 / 2 / 3+)</div>
-          <div class="def-body">Cases are grouped into four buckets for chart comparisons.
-          The 3+ group captures all cases with three or more transfers. Because AHT and messages
-          continue to rise with each transfer, this group consistently shows the highest cost and effort.</div>
-          <div class="def-formula">0 = direct resolution &nbsp;|&nbsp; 1 = one transfer &nbsp;|&nbsp; 2 = two transfers &nbsp;|&nbsp; 3+ = three or more</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card warning">
-          <div class="def-term">Loop / Rework Rate</div>
-          <div class="def-body">A <em>loop</em> occurs when a case visits the same queue more than once
-          during its journey — indicating the case was sent back to a queue that had already seen it.
-          Every loop is an avoidable transfer. The loop rate measures what proportion of cases experienced
-          at least one loop.</div>
-          <div class="def-formula">Loop Rate = (cases with any repeated queue visit ÷ total cases) × 100</div>
-          <div class="def-example">Example: A case going Queue A → Queue B → Queue A has a loop.</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card warning">
-          <div class="def-term">Routing Days</div>
-          <div class="def-body">Total calendar days a case spent in <em>transit</em> between queues —
-          i.e., the sum of time in all queues <em>except</em> the final resolving queue.
-          This isolates pure routing delay from actual resolution time. A case resolved first-touch
-          has 0 routing days.</div>
-          <div class="def-formula">Routing Days = sum of DAYS_IN_QUEUE for all queues except the last</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card warning">
-          <div class="def-term">Dwell Days (Queue Intelligence)</div>
-          <div class="def-body">Time a case spent inside a specific queue, measured from when it arrived
-          to when it moved on. Shown as median (typical experience) and P90 (worst-case: 9 in 10 cases
-          resolved faster than this). Long dwell times indicate capacity constraints or process delays
-          within that queue.</div>
-          <div class="def-formula">Dwell Days = DAYS_IN_QUEUE for one queue step</div>
-        </div>
-      </div>
-    </div>
+        <!-- ── Effort & Cost Metrics ── -->
+        <tr style="background:#EBF3FB;">
+          <td colspan="3" style="font-weight:800;font-size:.72rem;text-transform:uppercase;
+            letter-spacing:.5px;color:#0078D4;padding:6px 10px;border-color:#BDD7F0;">
+            Effort &amp; Cost Metrics
+          </td>
+        </tr>
+        <tr>
+          <td><strong>Average Handle Time (AHT)</strong></td>
+          <td>Total active agent time on a case, in <strong>minutes</strong>. Includes all queue interactions across the journey. AHT rises with each transfer as agents re-read context, re-engage the customer, and re-work prior steps. Median is used as the benchmark — resistant to extreme outliers.</td>
+          <td><code>TOTALACTIVEAHT ÷ 60 → minutes</code></td>
+        </tr>
+        <tr>
+          <td><strong>Customer Messages</strong></td>
+          <td>Total messages sent by the customer during the case. Higher counts reflect greater customer effort and frustration — re-explaining their query to each new agent they are transferred to.</td>
+          <td><code>MESSAGESRECEIVED_CUSTOMER (max across all steps)</code></td>
+        </tr>
+        <tr>
+          <td><strong>P90 (90th Percentile)</strong></td>
+          <td>The value below which 90% of cases fall. A large gap between median and P90 means a minority of cases experience significantly worse outcomes — often due to complex routing chains or queue backlogs.</td>
+          <td><code>QUANTILE_CONT(metric, 0.9)</code><br><span style="font-size:.75rem;color:#107C10;">Median dwell 1.2d, P90 6.5d = some cases wait much longer</span></td>
+        </tr>
+        <tr>
+          <td><strong>Intermediary Queue Delay (Pareto Distribution)</strong></td>
+          <td>The Process &amp; Routing Pareto Distribution ranks queues by total delay days accumulated as intermediary stops — excluding entry and final queues. A small number of queues typically account for the majority of total routing delay.</td>
+          <td><code>SUM(DAYS_IN_QUEUE) where queue is not entry or final</code></td>
+        </tr>
 
-    <!-- ═══════════ SECTION 3: EFFORT METRICS ═══════════ -->
-    <div class="def-section-title">Effort &amp; Cost Metrics</div>
-    <div class="row g-3">
-      <div class="col-md-4">
-        <div class="def-card danger">
-          <div class="def-term">Average Handle Time (AHT)</div>
-          <div class="def-body">Total active agent time spent on a case, measured in <strong>minutes</strong>.
-          This includes all queue interactions across the entire journey. As transfers increase, AHT
-          rises because each receiving agent must re-read context, re-engage the customer, and re-work
-          steps already completed. Box plots show the distribution (Q1, median, Q3) by transfer group.</div>
-          <div class="def-formula">AHT = TOTALACTIVEAHT (source system) ÷ 60 &nbsp;→&nbsp; minutes</div>
-          <div class="def-example">Median AHT is used as the benchmark — it is resistant to extreme outliers unlike the mean.</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card danger">
-          <div class="def-term">Customer Messages</div>
-          <div class="def-body">The total number of messages sent by the customer during the case lifecycle
-          in Messenger. Higher message counts reflect greater customer effort and frustration — customers
-          sending more messages to chase progress or re-explain their query to each new agent they are
-          transferred to.</div>
-          <div class="def-formula">Messages = MESSAGESRECEIVED_CUSTOMER (maximum across all queue steps)</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card danger">
-          <div class="def-term">P90 (90th Percentile)</div>
-          <div class="def-body">The value below which 90% of cases fall. Used alongside the median to
-          show tail behaviour — the worst 10% of experiences. A large gap between median and P90 means
-          a minority of cases are experiencing significantly worse outcomes, often due to complex
-          routing chains or queue backlogs.</div>
-          <div class="def-formula">P90 = QUANTILE_CONT(metric, 0.9)</div>
-          <div class="def-example">Median dwell = 1.2 days, P90 = 6.5 days means some cases wait much longer than typical.</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card info">
-          <div class="def-term">AHT Multiplier Effect</div>
-          <div class="def-body">The Cost &amp; Effort tab indexes all AHT and message figures to 100 at
-          0 transfers. This shows the <em>relative</em> cost increase caused by each additional transfer.
-          An indexed value of 180 means that group costs 80% more than a direct-resolution case.</div>
-          <div class="def-formula">Indexed AHT = (median AHT for group ÷ median AHT for 0-transfer group) × 100</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card info">
-          <div class="def-term">% of Total Routing Delay (Queue Intelligence)</div>
-          <div class="def-body">For a selected queue, what proportion of all routing delay days across
-          the filtered dataset was spent in that queue. A queue with a high % is a major bottleneck in
-          the network — cases spend disproportionate time there relative to the value they receive.</div>
-          <div class="def-formula">% of Routing Delay = (total dwell days in queue ÷ sum of all routing_days) × 100</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card info">
-          <div class="def-term">Intermediary Queue Delay (Pareto)</div>
-          <div class="def-body">The Process &amp; Routing Pareto ranks queues by the total delay days they
-          accumulate as <em>intermediary</em> stops — excluding both entry and final queues.
-          The Pareto principle typically applies: a small number of queues account for the majority of
-          total routing delay.</div>
-          <div class="def-formula">Delay Days = SUM(DAYS_IN_QUEUE) where queue is not entry or final</div>
-        </div>
-      </div>
-    </div>
+        <!-- ── Segmentation ── -->
+        <tr style="background:#EBF3FB;">
+          <td colspan="3" style="font-weight:800;font-size:.72rem;text-transform:uppercase;
+            letter-spacing:.5px;color:#0078D4;padding:6px 10px;border-color:#BDD7F0;">
+            Segmentation &amp; Classification
+          </td>
+        </tr>
+        <tr>
+          <td><strong>Retail Segment</strong></td>
+          <td>Cases where the entry queue begins with <strong>HD RTL A</strong> but not <strong>HD RTL A PRT</strong>. Represents personal lines customers contacting Hastings Direct retail insurance teams.</td>
+          <td><code>entry_queue LIKE 'HD RTL A%' AND NOT LIKE 'HD RTL A PRT%'</code></td>
+        </tr>
+        <tr>
+          <td><strong>Claims Segment</strong></td>
+          <td>All cases that do not meet the Retail criteria — primarily cases entering through Claims queues, including HD RTL A PRT queues. Claims cases tend to be more complex with different transfer patterns.</td>
+          <td><code>All cases not classified as Retail</code></td>
+        </tr>
+        <tr>
+          <td><strong>In-Hours (IH) vs Out-of-Hours (OOH)</strong></td>
+          <td>Whether the case was created within standard working hours (In-Hours = 1) or outside them (Out-of-Hours = 0). Sourced directly from the operational system. OOH cases may have access to fewer queues, driving higher transfer rates.</td>
+          <td><code>INHOURS = 1 → in-hours &nbsp;| INHOURS = 0 → out-of-hours</code></td>
+        </tr>
+        <tr>
+          <td><strong>Day of Week &amp; Hour of Day</strong></td>
+          <td>Both derived from the case creation timestamp. Used in the Heatmaps tab to identify which days and times generate the highest volume and transfer rates, enabling targeted staffing decisions.</td>
+          <td><code>Day = created_at.dayofweek (0=Mon … 6=Sun)<br>Hour = created_at.hour (0–23)</code></td>
+        </tr>
+        <tr>
+          <td><strong>FTR as Entry Queue %</strong></td>
+          <td>For a selected queue in Queue Intelligence: the percentage of cases where <em>that queue was both the entry point AND resolved with 0 transfers</em>. Isolates first-port-of-call performance from cases arriving post-transfer.</td>
+          <td><code>(entry = queue AND transfers = 0) ÷ total through queue × 100</code></td>
+        </tr>
+        <tr>
+          <td><strong>Avoidable Transfer (Round Trip)</strong></td>
+          <td>A case is flagged as avoidable when its journey starts and ends at the same queue — sent back to where it began. Every round-trip was avoidable at the point of first transfer.</td>
+          <td><code>entry_queue = final_queue AND transfers &gt; 0</code></td>
+        </tr>
 
-    <!-- ═══════════ SECTION 4: SEGMENTATION ═══════════ -->
-    <div class="def-section-title">Segmentation &amp; Classification</div>
-    <div class="row g-3">
-      <div class="col-md-4">
-        <div class="def-card teal">
-          <div class="def-term">Retail Segment</div>
-          <div class="def-body">Cases where the entry queue name begins with <strong>HD RTL A</strong>
-          but does <em>not</em> begin with <strong>HD RTL A PRT</strong>. These represent
-          personal lines customers contacting Hastings Direct retail insurance teams.</div>
-          <div class="def-formula">entry_queue STARTS WITH 'HD RTL A' AND NOT 'HD RTL A PRT'</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card teal">
-          <div class="def-term">Claims Segment</div>
-          <div class="def-body">All cases that do not meet the Retail criteria — primarily cases entering
-          through Claims queues (including <strong>HD RTL A PRT</strong> queues). Claims cases
-          tend to be more complex and may show different transfer patterns to Retail cases.</div>
-          <div class="def-formula">All cases not classified as Retail</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card teal">
-          <div class="def-term">In-Hours (IH) vs Out-of-Hours (OOH)</div>
-          <div class="def-body">Indicates whether the case was handled within standard working hours
-          (In-Hours = 1) or outside them (Out-of-Hours = 0). The INHOURS flag is sourced directly from
-          the operational system. OOH cases typically have access to fewer queues, which can drive
-          higher transfer rates as cases wait for specialist teams to become available.</div>
-          <div class="def-formula">INHOURS = 1 → in-hours &nbsp;|&nbsp; INHOURS = 0 → out-of-hours</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card teal">
-          <div class="def-term">Day of Week &amp; Hour of Day</div>
-          <div class="def-body">Derived from the case creation timestamp (day of week) and case close
-          timestamp (hour of day). Used in the Hours &amp; Transfer heatmap to identify which times
-          generate the highest volume and transfer rates, enabling targeted staffing decisions.</div>
-          <div class="def-formula">Day = created_at day of week (0=Monday … 6=Sunday)<br>Hour = close_datetime hour (0–23)</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card teal">
-          <div class="def-term">FTR as Entry Queue %</div>
-          <div class="def-body">For a specific queue used as the queue filter in Queue Intelligence,
-          this measures the percentage of cases where <em>that queue was both the entry point AND
-          the case resolved with 0 transfers</em>. It isolates how well the queue performs when it
-          is the first port of call, separate from cases that arrive after a transfer.</div>
-          <div class="def-formula">FTR as Entry % = (cases: entry_queue = selected queue AND transfers = 0) ÷ total through queue × 100</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card teal">
-          <div class="def-term">Avoidable Transfer (Round Trip)</div>
-          <div class="def-body">A case is flagged as an avoidable transfer when its journey starts and
-          ends at the same queue — i.e., it was eventually sent back to where it began. Every round-trip
-          represents a routing decision that could have been avoided at the point of first transfer.</div>
-          <div class="def-formula">Avoidable = journey where entry_queue === final_queue AND transfers &gt; 0</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ═══════════ SECTION 5: STATISTICAL TERMS ═══════════ -->
-    <div class="def-section-title">Statistical &amp; Chart Terms</div>
-    <div class="row g-3">
-      <div class="col-md-4">
-        <div class="def-card info">
-          <div class="def-term">Median vs Mean</div>
-          <div class="def-body">Throughout this report, <strong>median</strong> is preferred over mean
-          (average) for effort metrics like AHT and messages. The median is the middle value when cases
-          are sorted — it is not distorted by a small number of extremely long or short cases.
-          The mean is shown alongside for completeness where relevant.</div>
-          <div class="def-example">Example: 5 cases with AHT [10, 11, 12, 13, 200 min] → Median = 12, Mean = 49. Median better represents typical experience.</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card info">
-          <div class="def-term">Box Plot (IQR)</div>
-          <div class="def-body">Box plots on the Cost &amp; Effort tab show the distribution of AHT and
-          messages for each transfer group. The <strong>box</strong> spans Q1 (25th percentile) to Q3
-          (75th percentile) — the middle half of cases. The line inside is the median. Whiskers extend
-          to the typical range (up to 1.5× the box width). The diamond marker shows the mean.</div>
-          <div class="def-formula">IQR = Q3 − Q1 &nbsp;|&nbsp; Whisker max = Q3 + 1.5×IQR (capped at P95)</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card info">
-          <div class="def-term">Pareto / 80-20 Rule</div>
-          <div class="def-body">The Pareto chart on Process &amp; Routing ranks intermediary queues by
-          total delay days, with a cumulative percentage line. The 80% mark on the cumulative line
-          reveals which queues collectively account for 80% of all routing delay — typically a small
-          subset of all queues. Fixing those queues delivers the greatest overall improvement.</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card info">
-          <div class="def-term">Sankey Diagram</div>
-          <div class="def-body">Flow diagrams used in Journey Pathways to show how cases move between
-          queues. The width of each band is proportional to the number of cases following that path.
-          Clicking a band opens a case list for that specific queue-to-queue transition.
-          Forward Sankeys show where cases go <em>from</em> a queue; Backward Sankeys show where
-          they came <em>from</em>.</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card info">
-          <div class="def-term">Heatmap Normalisation</div>
-          <div class="def-body">The Hours &amp; Transfer heatmap shows each metric as a <em>percentage
-          of the day's total</em> rather than raw counts. This removes the effect of overall volume
-          differences between days, making it easy to see which hours within each day are
-          disproportionately expensive or transfer-heavy relative to that day's own baseline.</div>
-          <div class="def-formula">Cell value = (hour metric ÷ day total metric) × 100</div>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="def-card info">
-          <div class="def-term">Date Filters &amp; Data Scope</div>
-          <div class="def-body">All charts and KPIs respond to the date range, entry queue, segment,
-          and in-hours filters at the top of the page. The date filter applies to the case
-          <em>creation date</em>. Selecting a queue filter limits analysis to cases that <em>entered</em>
-          through that queue. All figures update instantly when filters are applied.</div>
-        </div>
-      </div>
-    </div>
+        <!-- ── Statistical Terms ── -->
+        <tr style="background:#EBF3FB;">
+          <td colspan="3" style="font-weight:800;font-size:.72rem;text-transform:uppercase;
+            letter-spacing:.5px;color:#0078D4;padding:6px 10px;border-color:#BDD7F0;">
+            Statistical &amp; Chart Terms
+          </td>
+        </tr>
+        <tr>
+          <td><strong>Median vs Mean</strong></td>
+          <td>Median is preferred throughout for effort metrics (AHT, messages) — it is the middle value when sorted and is not distorted by extreme cases. Mean is shown alongside for completeness.</td>
+          <td><span style="font-size:.75rem;color:#107C10;">AHT [10,11,12,13,200] → Median=12, Mean=49. Median better represents typical experience.</span></td>
+        </tr>
+        <tr>
+          <td><strong>Box Plot (IQR)</strong></td>
+          <td>Used on Cost &amp; Effort to show the distribution of AHT and messages by transfer group. The box spans Q1–Q3 (middle 50% of cases). The line is the median; the diamond is the mean. Whiskers show the typical range, capped at P95 to suppress extreme outliers.</td>
+          <td><code>IQR = Q3 − Q1<br>Whisker max = Q3 + 1.5×IQR (capped at P95)</code></td>
+        </tr>
+        <tr>
+          <td><strong>Pareto Distribution / 80-20 Rule</strong></td>
+          <td>The Pareto Distribution on Process &amp; Routing ranks intermediary queues by total delay days, with a cumulative % line. The 80% mark reveals which few queues account for most routing delay — fixing those delivers the greatest overall improvement.</td>
+          <td class="text-muted">—</td>
+        </tr>
+        <tr>
+          <td><strong>Sankey Diagram</strong></td>
+          <td>Flow diagrams in Journey Pathways showing how cases move between queues. Band width is proportional to case volume. Clicking a band opens a case list for that queue-to-queue transition. Forward = from queue; Backward = to queue.</td>
+          <td class="text-muted">—</td>
+        </tr>
+        <tr>
+          <td><strong>Heatmap Normalisation</strong></td>
+          <td>The Heatmaps tab shows each metric as a <em>percentage of the day's total</em> rather than raw counts. This removes volume differences between days, showing which hours within each day are disproportionately expensive or transfer-heavy relative to that day's baseline.</td>
+          <td><code>(hour metric ÷ day total metric) × 100</code></td>
+        </tr>
+        <tr>
+          <td><strong>Date Filters &amp; Data Scope</strong></td>
+          <td>All charts and KPIs respond to the date range, entry queue, segment, and in/out-of-hours filters at the top. The date filter applies to the case <em>creation date</em>. Queue filter limits analysis to cases that <em>entered</em> through that queue.</td>
+          <td class="text-muted">—</td>
+        </tr>
+      </tbody>
+    </table>
 
   </div><!-- /tab-definitions -->
 
@@ -1106,7 +981,7 @@ async function renderOverview(f) {{
   document.getElementById('case-count-badge').textContent = n + ' cases';
   document.getElementById('overview-kpis').innerHTML = [
     kpiCard('Total Cases', n, 'kpi-primary'),
-    kpiCard('Direct Resolution Rate', (d.drr||0).toFixed(1)+'%', 'kpi-success'),
+    kpiCard('Direct Resolution Rate (No Messenger Transfer)', (d.drr||0).toFixed(1)+'%', 'kpi-success'),
     kpiCard('Multi-Transfer Rate', (d.multi_rate||0).toFixed(1)+'%', 'kpi-danger'),
     kpiCard('Loop Rate', (d.loop_rate||0).toFixed(1)+'%', 'kpi-info'),
   ].join('');
@@ -1167,7 +1042,7 @@ async function renderProcess(f) {{
       line:{{color:COLORS.primary,width:2}}, marker:{{color:COLORS.primary,size:6}},
     }},
   ], {{
-    title:'Top Intermediary Queues by Total Delay Days (Pareto)', height:420,
+    title:'Top Intermediary Queues by Total Delay Days (Pareto Distribution)', height:420,
     margin:{{t:50,l:60,r:60,b:120}},
     paper_bgcolor:'transparent', plot_bgcolor:'transparent',
     xaxis:{{tickangle:-35,tickfont:{{size:9}},showgrid:false}},
@@ -1372,21 +1247,6 @@ window.setHeatmapView = function(view, btn) {{
 
 async function renderHeatmap(f) {{
   const w = buildWhere(f);
-  const stats = await q(`SELECT COUNT(*) as total,
-    AVG(CASE WHEN inhours=0 THEN 1.0 ELSE 0.0 END)*100 as ooh_rate,
-    AVG(CASE WHEN inhours=0 AND transfers>=2 THEN 1.0 ELSE 0.0 END)*100 as ooh_multi,
-    AVG(CASE WHEN inhours=1 AND transfers>=2 THEN 1.0 ELSE 0.0 END)*100 as ih_multi,
-    MEDIAN(CASE WHEN inhours=1 THEN total_active_aht END) as ih_aht,
-    MEDIAN(CASE WHEN inhours=0 THEN total_active_aht END) as ooh_aht
-    FROM cases ${{w}}`);
-  const d = stats[0] || {{}};
-
-  document.getElementById('hours-kpis').innerHTML = [
-    kpiCard('In-Hours Multi-Transfer %', Math.round(d.ih_multi||0)+'%', 'kpi-success'),
-    kpiCard('OOH Multi-Transfer %', Math.round(d.ooh_multi||0)+'%', 'kpi-danger'),
-    kpiCard('Median AHT — In-Hours', Math.round(d.ih_aht||0)+' min', 'kpi-success'),
-    kpiCard('Median AHT — OOH', Math.round(d.ooh_aht||0)+' min', 'kpi-danger'),
-  ].join('');
 
   // Fetch heatmap data — % of day
   const hmRows = await q(`
@@ -1473,7 +1333,7 @@ window.renderQueueIntel = async function() {{
   const qSafe = selQ.replace(/'/g, "''");
 
   // Main case-level stats + dwell from transitions
-  const [stats, dwellStats, totalRoutingRow] = await Promise.all([
+  const [stats, dwellStats] = await Promise.all([
     q(`SELECT COUNT(*) as n,
         AVG(CASE WHEN c.entry_queue='${{qSafe}}' AND c.transfers=0 THEN 1.0 ELSE 0.0 END)*100 as ftr_as_entry_pct,
         SUM(CASE WHEN c.entry_queue='${{qSafe}}' THEN 1 ELSE 0 END) as entry_count
@@ -1487,20 +1347,16 @@ window.renderQueueIntel = async function() {{
       FROM transitions
       WHERE QUEUE_NEW='${{qSafe}}'
         AND CASE_ID IN (SELECT CASE_ID FROM cases c ${{w}})`),
-    q(`SELECT SUM(routing_days) as total_routing FROM cases c ${{w}}`),
   ]);
 
   const d  = stats[0] || {{}};
   const dw = dwellStats[0] || {{}};
-  const totalRouting = totalRoutingRow[0]?.total_routing || 1;
-  const pctDelay = dw.total_dwell ? (dw.total_dwell / totalRouting * 100) : 0;
 
   document.getElementById('qi-kpis').innerHTML = [
     kpiCard('Cases Through Queue', (d.n||0).toLocaleString(), 'kpi-primary'),
     kpiCard('Median Dwell Days', (dw.med_dwell||0).toFixed(1), 'kpi-info'),
     kpiCard('P90 Dwell Days', (dw.p90_dwell||0).toFixed(1), 'kpi-warning'),
     kpiCard('FTR as Entry Queue', (d.ftr_as_entry_pct||0).toFixed(1)+'%', 'kpi-success'),
-    kpiCard('% of Total Routing Delay', pctDelay.toFixed(1)+'%', 'kpi-danger'),
   ].join('');
 
   const inbound = await q(`
