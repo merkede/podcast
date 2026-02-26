@@ -349,7 +349,7 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:14px;heig
   <button class="tab-btn" onclick="switchTab('process',this)">Process &amp; Routing</button>
   <button class="tab-btn" onclick="switchTab('cost',this)">Cost &amp; Effort</button>
   <button class="tab-btn" onclick="switchTab('hours',this)">Heatmaps</button>
-  <button class="tab-btn" onclick="switchTab('queue',this)">Queue Intelligence</button>
+  <button class="tab-btn" onclick="switchTab('queue',this)">Journey</button>
   <button class="tab-btn" onclick="switchTab('explorer',this)">Data Explorer</button>
   <button class="tab-btn" onclick="switchTab('definitions',this)">Definitions</button>
 </div>
@@ -410,11 +410,11 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:14px;heig
     <div class="row g-3 mt-1">
       <div class="col-md-6"><div class="chart-card">
         <div id="chart-pareto"></div>
-        <div class="chart-insight">Ranks queues by total days of delay they accumulate across all cases — not just how often they appear. The cumulative % line shows which queues together account for 80% of all routing delay. Fixing the top 2–3 delivers the most impact.</div>
+        <div class="chart-insight">This chart highlights which intermediary queues create the most delay days when a Messenger case is transferred through the routing process. Instead of simply showing where cases pass through, it focuses on the queues that add the most "lost days" of waiting time before the case reaches the final resolving queue.</div>
       </div></div>
       <div class="col-md-6"><div class="chart-card">
         <div id="chart-entry-dist"></div>
-        <div class="chart-insight">For each starting queue, shows what % of its cases were resolved first-touch (green) vs transferred at least once (red). Queues with high red bars are mis-routing most of their cases to the wrong team from the outset.</div>
+        <div class="chart-insight">This chart shows how effective each entry queue is at handling cases first time. The green bar shows the % of cases resolved without any transfer (First-Touch Resolution). The red bar shows the % of cases that had to be transferred at least once.</div>
       </div></div>
     </div>
   </div>
@@ -427,11 +427,11 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:14px;heig
     <div class="row g-3">
       <div class="col-md-6"><div class="chart-card">
         <div id="chart-aht-box"></div>
-        <div class="chart-insight">Box = middle 50% of cases (IQR). Line = median. Diamond = mean. Whiskers = typical range. Click any box to drill into the individual cases in that group. If the 3+ box sits much higher than the 0 box, transfers are directly inflating handle time.</div>
+        <div class="chart-insight">Each box shows how active handle time (minutes) is distributed across cases grouped by number of transfers. If the boxes shift upward from left to right, transfers are directly driving up the time agents spend on each case — agents re-read context, re-engage the customer, and repeat work already done. A wider box means more inconsistency within that group. Click any box to drill into the individual cases behind it.</div>
       </div></div>
       <div class="col-md-6"><div class="chart-card">
         <div id="chart-msg-box"></div>
-        <div class="chart-insight">Same spread chart for customer message volume. More transfers means more back-and-forth messages — each handoff resets customer expectations and generates additional contact. Click any box to see those cases.</div>
+        <div class="chart-insight">Each box shows how many messages the customer sent, grouped by number of transfers. A rising pattern from left to right means transferred cases generate significantly more customer contact — every handoff resets expectations and triggers follow-up messages. High message counts in the 3+ group are a signal of frustrated customers chasing a resolution. Click any box to drill into the individual cases behind it.</div>
       </div></div>
     </div>
   </div>
@@ -1010,10 +1010,9 @@ async function renderProcess(f) {{
     kpiCard('Multi-Transfer Rate', (d.multi_rate||0).toFixed(1)+'%', 'kpi-info'),
   ].join('');
 
-  // Intermediary queues Pareto
+  // Intermediary queues Pareto — true total fetched separately so % is against all intermediary delay
   const where_cases = buildWhere(f, 'c');
-  const pareto = await q(`
-    WITH max_orders AS (
+  const paretoQuery = `WITH max_orders AS (
       SELECT CASE_ID, MAX(QUEUE_ORDER) as max_ord FROM transitions GROUP BY CASE_ID
     )
     SELECT t.QUEUE_NEW, SUM(t.DAYS_IN_QUEUE) as delay_days
@@ -1021,20 +1020,31 @@ async function renderProcess(f) {{
     JOIN max_orders m ON t.CASE_ID = m.CASE_ID
     WHERE t.QUEUE_ORDER > 1 AND t.QUEUE_ORDER < m.max_ord
       AND t.CASE_ID IN (SELECT CASE_ID FROM cases c ${{where_cases}})
-    GROUP BY t.QUEUE_NEW ORDER BY delay_days DESC LIMIT 15`);
-  const totalDelay = pareto.reduce((s,r)=>s+r.delay_days,0);
-  if (!pareto.length || totalDelay === 0) {{
+    GROUP BY t.QUEUE_NEW ORDER BY delay_days DESC LIMIT 15`;
+  const paretoTotalQuery = `WITH max_orders AS (
+      SELECT CASE_ID, MAX(QUEUE_ORDER) as max_ord FROM transitions GROUP BY CASE_ID
+    )
+    SELECT SUM(t.DAYS_IN_QUEUE) as total_delay
+    FROM transitions t
+    JOIN max_orders m ON t.CASE_ID = m.CASE_ID
+    WHERE t.QUEUE_ORDER > 1 AND t.QUEUE_ORDER < m.max_ord
+      AND t.CASE_ID IN (SELECT CASE_ID FROM cases c ${{where_cases}})`;
+  const [pareto, paretoTotalRows] = await Promise.all([q(paretoQuery), q(paretoTotalQuery)]);
+  const trueTotalDelay = Number(paretoTotalRows[0]?.total_delay) || 0;
+  if (!pareto.length || trueTotalDelay === 0) {{
     Plotly.react('chart-pareto', [], {{title:'No intermediary queue data for this filter',height:420,
       paper_bgcolor:'transparent',plot_bgcolor:'transparent'}}, {{responsive:true}});
   }} else {{
   let cumPct = 0;
-  const cumPcts = pareto.map(r => {{ cumPct += r.delay_days/totalDelay*100; return Math.round(cumPct*10)/10; }});
+  const cumPcts = pareto.map(r => {{ cumPct += r.delay_days/trueTotalDelay*100; return Math.round(cumPct*10)/10; }});
   Plotly.react('chart-pareto', [
     {{
-      type:'bar', x:pareto.map(r=>r.QUEUE_NEW), y:pareto.map(r=>r.delay_days),
+      type:'bar', x:pareto.map(r=>r.QUEUE_NEW),
+      y:pareto.map(r => parseFloat((r.delay_days/trueTotalDelay*100).toFixed(1))),
       marker:{{color:COLORS.danger}},
-      text:pareto.map(r=>r.delay_days.toFixed(1)+' days'), textposition:'outside',
-      name:'Delay Days',
+      text:pareto.map(r => (r.delay_days/trueTotalDelay*100).toFixed(1)+'% ('+r.delay_days.toFixed(1)+' d)'),
+      textposition:'outside',
+      name:'% of Total Delay',
     }},
     {{
       type:'scatter', mode:'lines+markers',
@@ -1043,11 +1053,11 @@ async function renderProcess(f) {{
       line:{{color:COLORS.primary,width:2}}, marker:{{color:COLORS.primary,size:6}},
     }},
   ], {{
-    title:'Top Intermediary Queues by Total Delay Days (Pareto Distribution)', height:420,
-    margin:{{t:50,l:60,r:60,b:120}},
+    title:'Top Intermediary Queues by Total Delay (Pareto Distribution)', height:420,
+    margin:{{t:50,l:60,r:80,b:120}},
     paper_bgcolor:'transparent', plot_bgcolor:'transparent',
     xaxis:{{tickangle:-35,tickfont:{{size:9}},showgrid:false}},
-    yaxis:{{title:'Total Delay Days',showgrid:true,gridcolor:'#EDEBE9'}},
+    yaxis:{{title:'% of All Intermediary Delay',showgrid:true,gridcolor:'#EDEBE9'}},
     yaxis2:{{title:'Cumulative %',overlaying:'y',side:'right',range:[0,105],showgrid:false}},
     legend:{{orientation:'h',y:1.1}}, showlegend:true,
   }}, {{responsive:true}});
@@ -1077,7 +1087,7 @@ async function renderProcess(f) {{
       text:entry.map(r=>Math.round(r.ftr_pct)+'%'), textposition:'inside',
     }},
   ], {{
-    title:'Entry Queue FTR vs Transfer % (worst → best)', height:420,
+    title:'Entry Queue — First Time Resolution vs. Transfer', height:420,
     barmode:'stack',
     margin:{{t:50,l:200,r:60,b:40}},
     paper_bgcolor:'transparent', plot_bgcolor:'transparent',
@@ -1249,7 +1259,7 @@ window.setHeatmapView = function(view, btn) {{
 async function renderHeatmap(f) {{
   const w = buildWhere(f);
 
-  // Fetch heatmap data — % of day
+  // Fetch heatmap data — volume/inhours normalised; AHT/messages/routing as raw medians
   const hmRows = await q(`
     WITH raw AS (
       SELECT day_of_week, hour_of_day,
@@ -1262,31 +1272,30 @@ async function renderHeatmap(f) {{
       GROUP BY day_of_week, hour_of_day
     ),
     day_sums AS (
-      SELECT day_of_week, SUM(volume) as dv,
-        SUM(med_aht) as da, SUM(med_msgs) as dm, SUM(med_routing) as dr
+      SELECT day_of_week, SUM(volume) as dv
       FROM raw GROUP BY day_of_week
     )
     SELECT r.day_of_week, r.hour_of_day,
       CASE WHEN d.dv>0 THEN r.volume*100.0/d.dv ELSE 0 END as volume_pct,
-      CASE WHEN d.da>0 THEN r.med_aht*100.0/d.da ELSE 0 END as aht_pct,
-      CASE WHEN d.dm>0 THEN r.med_msgs*100.0/d.dm ELSE 0 END as msgs_pct,
-      CASE WHEN d.dr>0 THEN r.med_routing*100.0/d.dr ELSE 0 END as routing_pct,
+      COALESCE(r.med_aht, 0) as aht_med,
+      COALESCE(r.med_msgs, 0) as msgs_med,
+      COALESCE(r.med_routing, 0) as routing_med,
       r.inhours_rate
     FROM raw r JOIN day_sums d ON r.day_of_week=d.day_of_week`);
 
   // Build 7x24 grids
   const grids = {{}};
-  for (const key of ['volume_pct','aht_pct','msgs_pct','routing_pct','inhours_rate']) {{
+  for (const key of ['volume_pct','aht_med','msgs_med','routing_med','inhours_rate']) {{
     grids[key] = Array.from({{length:7}}, ()=>Array(24).fill(0));
   }}
   for (const row of hmRows) {{
     const di = Number(row.day_of_week), hi = Number(row.hour_of_day);
     if (di >= 0 && di < 7 && hi >= 0 && hi < 24) {{
-      grids.volume_pct[di][hi] = row.volume_pct;
-      grids.aht_pct[di][hi] = row.aht_pct;
-      grids.msgs_pct[di][hi] = row.msgs_pct;
-      grids.routing_pct[di][hi] = row.routing_pct;
-      grids.inhours_rate[di][hi] = (row.inhours_rate || 0) * 100;
+      grids.volume_pct[di][hi]  = row.volume_pct;
+      grids.aht_med[di][hi]     = row.aht_med    || 0;
+      grids.msgs_med[di][hi]    = row.msgs_med   || 0;
+      grids.routing_med[di][hi] = row.routing_med|| 0;
+      grids.inhours_rate[di][hi]= (row.inhours_rate || 0) * 100;
     }}
   }}
   HEATMAP_DATA = grids;
@@ -1295,27 +1304,48 @@ async function renderHeatmap(f) {{
 
 function drawHeatmap() {{
   const viewMap = {{
-    volume:'volume_pct', aht:'aht_pct', messages:'msgs_pct',
-    routing:'routing_pct', inhours:'inhours_rate',
+    volume:'volume_pct', aht:'aht_med', messages:'msgs_med',
+    routing:'routing_med', inhours:'inhours_rate',
   }};
+  // Title: what the view shows
   const titleMap = {{
-    volume:'Transfer Volume (% of day)', aht:'Handle Time (% of day)',
-    messages:'Customer Messages (% of day)', routing:'Routing Wait (% of day)',
-    inhours:'In-Hours Rate (%)',
+    volume:  'Transfer Volume — % of day (each row sums to 100%)',
+    aht:     'Median Handle Time — absolute minutes per cell',
+    messages:'Median Customer Messages — absolute count per cell',
+    routing: 'Median Routing Wait — absolute days per cell',
+    inhours: 'In/Out Hours Rate — % of cases in-hours per cell',
   }};
-  const key = viewMap[HEATMAP_VIEW];
+  // Colorbar axis label
+  const colbarLabel = {{
+    volume:'% of day', aht:'minutes', messages:'messages', routing:'days', inhours:'% in-hours',
+  }};
+  // Hover suffix after the number
+  const hoverSuffix = {{
+    volume:'%', aht:' min', messages:' msgs', routing:' d', inhours:'%',
+  }};
+  // Cell text formatter
+  const fmtCell = {{
+    volume:   v => v.toFixed(1)+'%',
+    aht:      v => v.toFixed(1)+' min',
+    messages: v => v.toFixed(1),
+    routing:  v => v.toFixed(2)+' d',
+    inhours:  v => v.toFixed(1)+'%',
+  }};
+
+  const key  = viewMap[HEATMAP_VIEW];
   const vals = HEATMAP_DATA[key];
+  const hs   = hoverSuffix[HEATMAP_VIEW];
 
   Plotly.react('chart-heatmap', [{{
     type:'heatmap', z:vals, x:HOUR_LABELS, y:DAY_NAMES,
     colorscale:RED_SCALE, showscale:true,
-    colorbar:{{title:{{text:HEATMAP_VIEW==='inhours'?'In-Hours Rate (%)':'% of day',font:{{size:10}}}},thickness:12,len:0.85}},
+    colorbar:{{title:{{text:colbarLabel[HEATMAP_VIEW],font:{{size:10}}}},thickness:12,len:0.85}},
     xgap:2, ygap:2,
-    hovertemplate:'%{{y}}, %{{x}}<br>%{{z:.1f}}%<extra></extra>',
-    text:vals.map(row=>row.map(v=>v.toFixed(1)+'%')),
+    hovertemplate:'%{{y}}, %{{x}}<br>%{{z:.2f}}'+hs+'<extra></extra>',
+    text:vals.map(row=>row.map(fmtCell[HEATMAP_VIEW])),
     texttemplate:'%{{text}}', textfont:{{size:8}},
   }}], {{
-    title:titleMap[HEATMAP_VIEW] + ' — each row normalised to 100% of that day',
+    title:titleMap[HEATMAP_VIEW],
     height:500, margin:{{l:100,r:60,t:55,b:50}},
     xaxis:{{title:'Hour of Day',tickfont:{{size:9}},dtick:1}},
     yaxis:{{tickfont:{{size:11}},autorange:'reversed'}},
@@ -1360,44 +1390,62 @@ window.renderQueueIntel = async function() {{
     kpiCard('FTR as Entry Queue', (d.ftr_as_entry_pct||0).toFixed(1)+'%', 'kpi-success'),
   ].join('');
 
-  const inbound = await q(`
-    SELECT prev.QUEUE_NEW as from_queue, COUNT(*) as n
-    FROM transitions t
-    JOIN transitions prev ON t.CASE_ID=prev.CASE_ID AND t.QUEUE_ORDER=prev.QUEUE_ORDER+1
-    WHERE t.QUEUE_NEW='${{qSafe}}'
-      AND t.CASE_ID IN (SELECT CASE_ID FROM cases c ${{w}})
-    GROUP BY prev.QUEUE_NEW ORDER BY n DESC LIMIT 12`);
-
-  const outbound = await q(`
-    SELECT nxt.QUEUE_NEW as to_queue, COUNT(*) as n
-    FROM transitions t
-    JOIN transitions nxt ON t.CASE_ID=nxt.CASE_ID AND nxt.QUEUE_ORDER=t.QUEUE_ORDER+1
-    WHERE t.QUEUE_NEW='${{qSafe}}'
-      AND t.CASE_ID IN (SELECT CASE_ID FROM cases c ${{w}})
-    GROUP BY nxt.QUEUE_NEW ORDER BY n DESC LIMIT 12`);
+  // Fetch inbound, inbound true total, outbound, outbound true total in one round-trip
+  const [inbound, inboundTotalRows, outbound, outboundTotalRows] = await Promise.all([
+    q(`SELECT prev.QUEUE_NEW as from_queue, COUNT(*) as n
+       FROM transitions t
+       JOIN transitions prev ON t.CASE_ID=prev.CASE_ID AND t.QUEUE_ORDER=prev.QUEUE_ORDER+1
+       WHERE t.QUEUE_NEW='${{qSafe}}'
+         AND t.CASE_ID IN (SELECT CASE_ID FROM cases c ${{w}})
+       GROUP BY prev.QUEUE_NEW ORDER BY n DESC LIMIT 12`),
+    q(`SELECT COUNT(*) as total
+       FROM transitions t
+       JOIN transitions prev ON t.CASE_ID=prev.CASE_ID AND t.QUEUE_ORDER=prev.QUEUE_ORDER+1
+       WHERE t.QUEUE_NEW='${{qSafe}}'
+         AND t.CASE_ID IN (SELECT CASE_ID FROM cases c ${{w}})`),
+    q(`SELECT nxt.QUEUE_NEW as to_queue, COUNT(*) as n
+       FROM transitions t
+       JOIN transitions nxt ON t.CASE_ID=nxt.CASE_ID AND nxt.QUEUE_ORDER=t.QUEUE_ORDER+1
+       WHERE t.QUEUE_NEW='${{qSafe}}'
+         AND t.CASE_ID IN (SELECT CASE_ID FROM cases c ${{w}})
+       GROUP BY nxt.QUEUE_NEW ORDER BY n DESC LIMIT 12`),
+    q(`SELECT COUNT(*) as total
+       FROM transitions t
+       JOIN transitions nxt ON t.CASE_ID=nxt.CASE_ID AND nxt.QUEUE_ORDER=t.QUEUE_ORDER+1
+       WHERE t.QUEUE_NEW='${{qSafe}}'
+         AND t.CASE_ID IN (SELECT CASE_ID FROM cases c ${{w}})`),
+  ]);
+  const totalInbound  = Number(inboundTotalRows[0]?.total)  || 1;
+  const totalOutbound = Number(outboundTotalRows[0]?.total) || 1;
 
   Plotly.react('chart-qi-inbound', [{{
-    type:'bar', x:inbound.map(r=>r.n), y:inbound.map(r=>r.from_queue),
+    type:'bar',
+    x:inbound.map(r => parseFloat((r.n/totalInbound*100).toFixed(1))),
+    y:inbound.map(r=>r.from_queue),
     orientation:'h', marker:{{color:COLORS.teal}},
-    text:inbound.map(r=>r.n.toLocaleString()), textposition:'outside',
+    text:inbound.map(r => (r.n/totalInbound*100).toFixed(1)+'% ('+r.n.toLocaleString()+')'),
+    textposition:'outside',
   }}], {{
     title:`Where cases come from before ${{selQ}}`, height:380,
-    margin:{{t:50,l:200,r:60,b:40}},
+    margin:{{t:50,l:200,r:110,b:40}},
     paper_bgcolor:'transparent', plot_bgcolor:'transparent',
     yaxis:{{autorange:'reversed',tickfont:{{size:9}}}},
-    xaxis:{{showgrid:true,gridcolor:'#EDEBE9'}},
+    xaxis:{{title:'% of all inbound cases',showgrid:true,gridcolor:'#EDEBE9'}},
   }}, {{responsive:true}});
 
   Plotly.react('chart-qi-outbound', [{{
-    type:'bar', x:outbound.map(r=>r.n), y:outbound.map(r=>r.to_queue),
+    type:'bar',
+    x:outbound.map(r => parseFloat((r.n/totalOutbound*100).toFixed(1))),
+    y:outbound.map(r=>r.to_queue),
     orientation:'h', marker:{{color:COLORS.purple}},
-    text:outbound.map(r=>r.n.toLocaleString()), textposition:'outside',
+    text:outbound.map(r => (r.n/totalOutbound*100).toFixed(1)+'% ('+r.n.toLocaleString()+')'),
+    textposition:'outside',
   }}], {{
     title:`Where cases go after ${{selQ}}`, height:380,
-    margin:{{t:50,l:200,r:60,b:40}},
+    margin:{{t:50,l:200,r:110,b:40}},
     paper_bgcolor:'transparent', plot_bgcolor:'transparent',
     yaxis:{{autorange:'reversed',tickfont:{{size:9}}}},
-    xaxis:{{showgrid:true,gridcolor:'#EDEBE9'}},
+    xaxis:{{title:'% of all outbound cases',showgrid:true,gridcolor:'#EDEBE9'}},
   }}, {{responsive:true}});
 
   // Dwell histogram
