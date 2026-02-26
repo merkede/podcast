@@ -2147,8 +2147,13 @@ def main():
     min_date = case_df["created_at"].min().strftime("%Y-%m-%d")
     max_date = case_df["created_at"].max().strftime("%Y-%m-%d")
     all_queues = sorted(case_df["entry_queue"].dropna().unique().tolist())
-    # All queues that appear anywhere in transitions (for QI + Journey dropdowns)
-    all_trans_queues = sorted(df_raw["QUEUE_NEW"].dropna().unique().tolist())
+    # All queues that appear in transitions, ordered by case volume descending
+    # so the highest-traffic queue is the default selection in QI + Journey dropdowns
+    all_trans_queues = (
+        df_raw["QUEUE_NEW"].dropna()
+        .value_counts()
+        .index.tolist()
+    )
 
     print("\nGenerating index.html ...")
     html = generate_html(case_df, min_date, max_date, all_queues, all_trans_queues)
