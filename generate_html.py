@@ -160,7 +160,7 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
   position:sticky;top:0;z-index:1000;}}
 .hd-logo{{background:var(--hd-green);color:#fff;font-weight:800;font-size:1.1rem;padding:.3rem .8rem;
   border-radius:4px;letter-spacing:.5px;}}
-.hd-title{{color:#fff;font-size:.95rem;font-weight:600;opacity:.9;}}
+.hd-title{{color:#fff;font-size:1.3rem;font-weight:600;opacity:.9;}}
 /* ── Filters ── */
 .filter-panel{{background:#1a1a2e;padding:1rem 1.4rem;
   border-top:2px solid var(--pbi-blue);border-bottom:2px solid var(--pbi-blue);}}
@@ -288,7 +288,7 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:14px;heig
        style="object-fit:contain;display:block;">
   <div>
     <div class="hd-title">Messenger Transfer Analytics &nbsp;|&nbsp; Hastings Direct</div>
-    <div class="hd-title" style="opacity:.7;margin-top:.15rem;">by Hamzah Javaid</div>
+    <div class="hd-title" style="opacity:.7;margin-top:.15rem;font-size:.95rem;">by Hamzah Javaid</div>
   </div>
   <div style="margin-left:auto;color:#aaa;font-size:.75rem;" id="case-count-badge"></div>
 </div>
@@ -371,11 +371,11 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:14px;heig
     </div>
     <div class="row g-2 mb-3">
       <div class="col-md-4">
-        <div class="filter-label">Select a Queue</div>
+        <div class="filter-label" style="color:#605E5C;">Select a Queue</div>
         <select id="journey-queue-select" class="form-select form-select-sm" onchange="renderJourney()"></select>
       </div>
       <div class="col-md-2">
-        <div class="filter-label">Number of Transfers</div>
+        <div class="filter-label" style="color:#605E5C;">Number of Transfers</div>
         <select id="journey-depth" class="form-select form-select-sm" onchange="renderJourney()">
           <option value="2">2</option><option value="3" selected>3</option>
           <option value="4">4</option><option value="5">5</option>
@@ -960,8 +960,9 @@ function updateSliderLabel() {{
 // ═══════════════════════════════════════════════════════
 // KPI HELPERS
 // ═══════════════════════════════════════════════════════
-function kpiCard(label, value, cls) {{
-  return `<div class="col-6 col-md-3">
+function kpiCard(label, value, cls, colCls) {{
+  const col = colCls || 'col-6 col-md-3';
+  return `<div class="${{col}}">
     <div class="kpi-card ${{cls}}"><h4>${{label}}</h4><h2>${{value}}</h2></div></div>`;
 }}
 
@@ -981,9 +982,9 @@ async function renderOverview(f) {{
   document.getElementById('case-count-badge').textContent = n + ' cases';
   document.getElementById('overview-kpis').innerHTML = [
     kpiCard('Total Cases', n, 'kpi-primary'),
-    kpiCard('Direct Resolution Rate (No Messenger Transfer)', (d.drr||0).toFixed(1)+'%', 'kpi-success'),
-    kpiCard('Multi-Transfer Rate', (d.multi_rate||0).toFixed(1)+'%', 'kpi-danger'),
-    kpiCard('Loop Rate', (d.loop_rate||0).toFixed(1)+'%', 'kpi-info'),
+    kpiCard('Direct Resolution Rate (No Messenger Transfer)', (d.drr||0).toFixed(1)+'%', 'kpi-success', 'col-6 col-md-5'),
+    kpiCard('Multi-Transfer Rate', (d.multi_rate||0).toFixed(1)+'%', 'kpi-danger', 'col-6 col-md-2'),
+    kpiCard('Loop Rate', (d.loop_rate||0).toFixed(1)+'%', 'kpi-info', 'col-6 col-md-2'),
   ].join('');
 
   // Journey Pathways is embedded in Overview tab — render it too
