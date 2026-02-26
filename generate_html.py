@@ -1212,15 +1212,15 @@ async function renderCost(f) {{
   }}
   COST_TRACE_BINS = bins.filter(b => ahtByBin[b].length > 0);
 
-  // Compute median in JS for KPI values
-  function medArr(arr) {{
-    if (!arr.length) return 0;
-    const s = [...arr].sort((a,b)=>a-b);
-    const m = Math.floor(s.length/2);
-    return s.length%2 ? s[m] : (s[m-1]+s[m])/2;
-  }}
-  const base_aht = medArr(ahtByBin['0']), high_aht = medArr(ahtByBin['3+']);
-  const base_msg = medArr(msgByBin['0']), high_msg = medArr(msgByBin['3+']);
+  // Quartile helpers — computed in JS so we always get real numbers (no SQL null risk)
+  const jsSort = arr => [...arr].sort((a,b)=>a-b);
+  const jsQ1  = arr => {{ const s=jsSort(arr); return s[Math.floor(s.length/4)]; }};
+  const jsMed = arr => {{ if(!arr.length)return 0; const s=jsSort(arr),m=Math.floor(s.length/2); return s.length%2?s[m]:(s[m-1]+s[m])/2; }};
+  const jsQ3  = arr => {{ const s=jsSort(arr); return s[Math.floor(s.length*3/4)]; }};
+  const jsMean= arr => arr.reduce((s,v)=>s+v,0)/arr.length;
+
+  const base_aht = jsMed(ahtByBin['0']), high_aht = jsMed(ahtByBin['3+']);
+  const base_msg = jsMed(msgByBin['0']), high_msg = jsMed(msgByBin['3+']);
   const aht_pct = base_aht > 0 ? (high_aht/base_aht - 1)*100 : 0;
   const msg_pct = base_msg > 0 ? (high_msg/base_msg - 1)*100 : 0;
 
@@ -1241,37 +1241,68 @@ async function renderCost(f) {{
     `Every additional transfer inflates handle time by ~${{Math.round(aht_pct/3)}}% per step
      and customer messages by ~${{Math.round(msg_pct/3)}}% per step.`;
 
-  // Box traces — raw y arrays, Plotly derives quartiles and whiskers itself
+  // Pre-aggregated box traces: whiskers collapsed to box edges (no outlier distortion),
+  // quartiles self-computed in JS so no SQL null risk.
+  // whiskerwidth:0 removes the horizontal cap lines; annotations label median & mean.
   const ahtTraces = [], msgTraces = [];
+  const ahtAnnotations = [], msgAnnotations = [];
+
   for (const bin of bins) {{
     if (!ahtByBin[bin].length) continue;
     const label = bin + (bin==='1'?' transfer':' transfers');
     const color = BIN_COLORS[bin];
+
+    const aq1=jsQ1(ahtByBin[bin]), amed=jsMed(ahtByBin[bin]),
+          aq3=jsQ3(ahtByBin[bin]), amean=jsMean(ahtByBin[bin]);
+    const mq1=jsQ1(msgByBin[bin]), mmed=jsMed(msgByBin[bin]),
+          mq3=jsQ3(msgByBin[bin]), mmean=jsMean(msgByBin[bin]);
+
     ahtTraces.push({{
-      type:'box', name:label, y:ahtByBin[bin],
-      boxmean:true, boxpoints:false,
-      marker:{{color}}, fillcolor:color+'55', line:{{color}},
+      type:'box', name:label,
+      q1:[aq1], median:[amed], q3:[aq3], mean:[amean],
+      lowerfence:[aq1], upperfence:[aq3],
+      whiskerwidth:0, boxmean:true,
+      fillcolor:color+'55', line:{{color}}, marker:{{color}},
     }});
     msgTraces.push({{
-      type:'box', name:label, y:msgByBin[bin],
-      boxmean:true, boxpoints:false,
-      marker:{{color}}, fillcolor:color+'55', line:{{color}},
+      type:'box', name:label,
+      q1:[mq1], median:[mmed], q3:[mq3], mean:[mmean],
+      lowerfence:[mq1], upperfence:[mq3],
+      whiskerwidth:0, boxmean:true,
+      fillcolor:color+'55', line:{{color}}, marker:{{color}},
+    }});
+
+    // Annotation above each box: anchored at Q3 so it clears the top of the box
+    const aOffset = Math.max((aq3-aq1)*0.25, aq3*0.05, 1);
+    ahtAnnotations.push({{
+      x:label, y:aq3+aOffset, yanchor:'bottom',
+      text:`Med <b>${{Math.round(amed)}}</b> | Mean <b>${{Math.round(amean)}}</b>`,
+      showarrow:false, font:{{size:9,color:'#333'}},
+      bgcolor:'rgba(255,255,255,0.88)', borderpad:3,
+    }});
+    const mOffset = Math.max((mq3-mq1)*0.25, mq3*0.05, 0.5);
+    msgAnnotations.push({{
+      x:label, y:mq3+mOffset, yanchor:'bottom',
+      text:`Med <b>${{Math.round(mmed)}}</b> | Mean <b>${{Math.round(mmean)}}</b>`,
+      showarrow:false, font:{{size:9,color:'#333'}},
+      bgcolor:'rgba(255,255,255,0.88)', borderpad:3,
     }});
   }}
 
-  const boxLayout = (title, ytitle) => ({{
+  const boxLayout = (title, ytitle, annots) => ({{
     title, height:420, showlegend:false,
     paper_bgcolor:'transparent', plot_bgcolor:'transparent',
-    yaxis:{{title:ytitle, showgrid:true, gridcolor:'#EDEBE9'}},
+    yaxis:{{title:ytitle, showgrid:true, gridcolor:'#EDEBE9', rangemode:'tozero'}},
     xaxis:{{showgrid:false}}, margin:{{t:50,l:60,r:30,b:40}},
+    annotations: annots,
   }});
 
   const ahtDiv = document.getElementById('chart-aht-box');
-  Plotly.react(ahtDiv, ahtTraces, boxLayout('Handle Time by Transfer Count','AHT (min)'), {{responsive:true}});
+  Plotly.react(ahtDiv, ahtTraces, boxLayout('Handle Time by Transfer Count','AHT (min)', ahtAnnotations), {{responsive:true}});
   ahtDiv.on('plotly_click', data => showCostModal(data, 'AHT'));
 
   const msgDiv = document.getElementById('chart-msg-box');
-  Plotly.react(msgDiv, msgTraces, boxLayout('Customer Messages by Transfer Count','Messages'), {{responsive:true}});
+  Plotly.react(msgDiv, msgTraces, boxLayout('Customer Messages by Transfer Count','Messages', msgAnnotations), {{responsive:true}});
   msgDiv.on('plotly_click', data => showCostModal(data, 'Messages'));
 
   // Multiplier effect
