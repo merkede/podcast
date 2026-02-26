@@ -157,18 +157,28 @@ def generate_html(case_df, min_date, max_date, all_queues, all_trans_queues):
 body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-size:.9rem;}}
 /* ── Header ── */
 .hd-header{{background:#1a1a2e;padding:.6rem 1.4rem;display:flex;align-items:center;gap:1rem;
-  box-shadow:0 2px 8px rgba(0,0,0,.4);position:sticky;top:0;z-index:1000;}}
+  position:sticky;top:0;z-index:1000;}}
 .hd-logo{{background:var(--hd-green);color:#fff;font-weight:800;font-size:1.1rem;padding:.3rem .8rem;
   border-radius:4px;letter-spacing:.5px;}}
 .hd-title{{color:#fff;font-size:.95rem;font-weight:600;opacity:.9;}}
 /* ── Filters ── */
-.filter-panel{{background:#fff;padding:1rem 1.4rem;border-bottom:1px solid #E1DFDD;
-  box-shadow:0 1px 4px rgba(0,0,0,.08);}}
-.filter-label{{font-size:.65rem;font-weight:700;color:#444;text-transform:uppercase;
+.filter-panel{{background:#1a1a2e;padding:1rem 1.4rem;}}
+.filter-label{{font-size:.65rem;font-weight:700;color:rgba(255,255,255,.55);text-transform:uppercase;
   letter-spacing:.5px;margin-bottom:.25rem;}}
-.filter-panel select,.filter-panel input{{font-size:.82rem;border:1px solid #C8C6C4;border-radius:4px;
-  padding:.3rem .5rem;width:100%;}}
+.filter-panel select,.filter-panel input[type=date]{{font-size:.82rem;
+  background:rgba(255,255,255,.1);color:rgba(255,255,255,.9);
+  border:1px solid rgba(255,255,255,.22);border-radius:4px;padding:.3rem .5rem;width:100%;}}
+.filter-panel select option{{background:#1a1a2e;color:#fff;}}
 .filter-panel select[multiple]{{height:80px;}}
+.filter-panel .toggle-btn{{background:rgba(255,255,255,.1);color:rgba(255,255,255,.8);
+  border:1px solid rgba(255,255,255,.25);}}
+.filter-panel .toggle-btn:hover{{background:rgba(255,255,255,.2);color:#fff;}}
+.filter-panel .toggle-btn.active{{background:var(--pbi-blue);color:#fff;border-color:var(--pbi-blue);}}
+#f-slider-label{{color:rgba(255,255,255,.5)!important;}}
+input[type=range]{{-webkit-appearance:none;appearance:none;height:4px;border-radius:2px;
+  background:rgba(255,255,255,.25);outline:none;}}
+input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:14px;height:14px;
+  border-radius:50%;background:var(--pbi-blue);cursor:pointer;}}
 /* ── Tabs ── */
 .tab-nav{{background:#1a1a2e;padding:.55rem 1rem;
   position:sticky;top:53px;z-index:999;display:flex;gap:.45rem;overflow-x:auto;
@@ -260,11 +270,6 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
   border-radius:8px;padding:.55rem 1rem;font-size:.78rem;color:#5a4000;
   display:flex;align-items:center;gap:.6rem;
   box-shadow:0 3px 12px rgba(255,185,0,.4);white-space:nowrap;}}
-/* ── Date slider ── */
-input[type=range]{{-webkit-appearance:none;appearance:none;height:4px;border-radius:2px;
-  background:#C8C6C4;outline:none;}}
-input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:14px;height:14px;
-  border-radius:50%;background:var(--pbi-blue);cursor:pointer;}}
 </style>
 </head>
 <body>
@@ -331,7 +336,7 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:14px;heig
     </div>
     <div class="col-md-2 d-flex align-items-end gap-1 flex-wrap">
       <button onclick="applyFilters()" class="btn btn-sm btn-primary w-100">Apply Filters</button>
-      <button onclick="resetFilters()" class="btn btn-sm btn-outline-secondary w-100">Reset Filters</button>
+      <button onclick="resetFilters()" class="btn btn-sm btn-outline-light w-100">Reset Filters</button>
     </div>
   </div>
 </div>
