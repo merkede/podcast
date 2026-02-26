@@ -162,7 +162,8 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
   border-radius:4px;letter-spacing:.5px;}}
 .hd-title{{color:#fff;font-size:.95rem;font-weight:600;opacity:.9;}}
 /* ── Filters ── */
-.filter-panel{{background:#1a1a2e;padding:1rem 1.4rem;}}
+.filter-panel{{background:#1a1a2e;padding:1rem 1.4rem;
+  border-top:2px solid var(--pbi-blue);border-bottom:2px solid var(--pbi-blue);}}
 .filter-label{{font-size:.65rem;font-weight:700;color:rgba(255,255,255,.55);text-transform:uppercase;
   letter-spacing:.5px;margin-bottom:.25rem;}}
 .filter-panel select,.filter-panel input[type=date]{{font-size:.82rem;
@@ -286,7 +287,7 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:14px;heig
   <div class="hd-logo">H</div>
   <div>
     <div class="hd-title">Messenger Transfer Analytics &nbsp;|&nbsp; Hastings Direct</div>
-    <div style="color:rgba(255,255,255,.5);font-size:.68rem;letter-spacing:.3px;margin-top:.1rem;">by Hamzah Javaid</div>
+    <div class="hd-title" style="opacity:.7;margin-top:.15rem;">by Hamzah Javaid</div>
   </div>
   <div style="margin-left:auto;color:#aaa;font-size:.75rem;" id="case-count-badge"></div>
 </div>
@@ -363,16 +364,6 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:14px;heig
       and compounding operational cost. Use the filters above to slice by date, queue, hours, and segment.
     </div>
     <div class="row g-3" id="overview-kpis"></div>
-    <div class="row g-3 mt-1">
-      <div class="col-md-6"><div class="chart-card">
-        <div id="chart-ov-transfers"></div>
-        <div class="chart-insight">Each bar is the number of cases that required that many agent transfers before closing. A high 3+ bar signals systematic mis-routing — cases being bounced between queues without ever reaching the right team first time.</div>
-      </div></div>
-      <div class="col-md-6"><div class="chart-card">
-        <div id="chart-ov-segment"></div>
-        <div class="chart-insight">Volume split between Retail and Claims. Use the Segment filter above to isolate one line of business and compare transfer behaviour across segments.</div>
-      </div></div>
-    </div>
 
     <!-- ── Journey Pathways (embedded in Overview) ── -->
     <hr style="margin:1.5rem 0;border-color:#C8C6C4;">
@@ -447,15 +438,10 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:14px;heig
         <div class="chart-insight">Same spread chart for customer message volume. More transfers means more back-and-forth messages — each handoff resets customer expectations and generates additional contact. Click any box to see those cases.</div>
       </div></div>
     </div>
-    <div class="chart-card mt-2">
-      <div id="chart-multiplier"></div>
-      <div class="chart-insight">Both metrics indexed to 100 at zero transfers (first-touch baseline). A bar at 180 means those cases consumed 80% more resource than a direct resolution. This shows the compounding cost of each additional transfer step.</div>
-    </div>
   </div>
 
-  <!-- ── TAB 4: HOURS & TRANSFER ── -->
+  <!-- ── TAB 4: HEATMAPS ── -->
   <div id="tab-hours" class="tab-panel">
-    <div class="guide-stmt" id="hours-guide-stmt">Loading...</div>
     <div class="row g-3" id="hours-kpis"></div>
     <div class="toggle-group" id="heatmap-toggles">
       <button class="toggle-btn active" onclick="setHeatmapView('volume',this)">Transfer Volume</button>
@@ -1125,41 +1111,6 @@ async function renderOverview(f) {{
     kpiCard('Loop Rate', (d.loop_rate||0).toFixed(1)+'%', 'kpi-info'),
   ].join('');
 
-  const xfer = await q(`
-    SELECT CASE WHEN transfers=0 THEN '0' WHEN transfers=1 THEN '1' WHEN transfers=2 THEN '2' ELSE '3+' END as bin,
-      COUNT(*) as n
-    FROM cases ${{w}} GROUP BY 1 ORDER BY MIN(transfers)`);
-  const binKeys = ['0','1','2','3+'];
-  const counts  = binKeys.map(l => (xfer.find(r=>r.bin===l)||{{n:0}}).n);
-  Plotly.react('chart-ov-transfers', [{{
-    type:'bar', x:binKeys, y:counts,
-    marker:{{color:['#107C10','#FFB900','#E8820C','#E81123']}},
-    text:counts.map(v=>v.toLocaleString()), textposition:'outside',
-  }}], {{
-    title:'Cases by Transfer Count', height:320, margin:{{t:50,l:50,r:20,b:50}},
-    paper_bgcolor:'transparent', plot_bgcolor:'transparent',
-    xaxis:{{
-      showgrid:false, tickfont:{{size:12}},
-      tickvals:binKeys, ticktext:['0','1','2','3+'],
-    }},
-    yaxis:{{showgrid:true,gridcolor:'#EDEBE9'}},
-    annotations:[{{
-      xref:'paper', yref:'paper', x:1, y:-0.18,
-      text:'<i>3+ includes all cases with 3 or more transfers (4, 5, 6…)</i>',
-      showarrow:false, font:{{size:9, color:'#888'}}, xanchor:'right',
-    }}],
-  }}, {{responsive:true}});
-
-  const seg = await q(`SELECT segment, COUNT(*) as n FROM cases ${{w}} GROUP BY segment`);
-  Plotly.react('chart-ov-segment', [{{
-    type:'pie', labels:seg.map(r=>r.segment), values:seg.map(r=>r.n),
-    hole:0.4, marker:{{colors:[COLORS.primary, COLORS.purple]}},
-    textinfo:'label+percent',
-  }}], {{
-    title:'Cases by Segment', height:320, margin:{{t:50,l:20,r:20,b:20}},
-    paper_bgcolor:'transparent',
-  }}, {{responsive:true}});
-
   // Journey Pathways is embedded in Overview tab — render it too
   renderJourney();
 }}
@@ -1399,29 +1350,6 @@ async function renderCost(f) {{
   Plotly.react(msgDiv, msgTraces, boxLayout('Customer Messages by Transfer Count','Messages', msgAnnotations), {{responsive:true}});
   msgDiv.on('plotly_click', data => showCostModal(data, 'Messages'));
 
-  // Multiplier effect
-  const esc = await q(`
-    SELECT CASE WHEN transfers=0 THEN '0' WHEN transfers=1 THEN '1' WHEN transfers=2 THEN '2' ELSE '3+' END as transfer_bin,
-      MEDIAN(total_active_aht) as aht, MEDIAN(messages) as msg
-    FROM cases ${{w}} GROUP BY 1 ORDER BY MIN(transfers)`);
-  const base_a = esc.find(r=>r.transfer_bin==='0')?.aht || 1;
-  const base_m = esc.find(r=>r.transfer_bin==='0')?.msg || 1;
-  Plotly.react('chart-multiplier', [
-    {{type:'bar', name:'Handle Time (indexed)', x:esc.map(r=>r.transfer_bin),
-      y:esc.map(r=>r.aht/base_a*100), marker:{{color:COLORS.primary}},
-      text:esc.map(r=>Math.round(r.aht/base_a*100)), textposition:'outside'}},
-    {{type:'bar', name:'Messages (indexed)', x:esc.map(r=>r.transfer_bin),
-      y:esc.map(r=>r.msg/base_m*100), marker:{{color:COLORS.warning}},
-      text:esc.map(r=>Math.round(r.msg/base_m*100)), textposition:'outside'}},
-  ], {{
-    title:'Multiplier Effect: Handle Time & Messages vs First-Touch Baseline',
-    barmode:'group', height:380,
-    paper_bgcolor:'transparent', plot_bgcolor:'transparent',
-    yaxis:{{showgrid:true,gridcolor:'#EDEBE9'}},
-    shapes:[{{type:'line',x0:-0.5,x1:3.5,y0:100,y1:100,line:{{dash:'dash',color:'#999'}}}}],
-    annotations:[{{x:3.5,y:100,text:'Baseline = 100',showarrow:false,font:{{size:10,color:'#888'}},xanchor:'left'}}],
-    margin:{{t:55,l:60,r:20,b:50}}, legend:{{orientation:'h',y:1.1}},
-  }}, {{responsive:true}});
 }}
 
 async function showCostModal(data, chartType) {{
@@ -1452,13 +1380,6 @@ async function renderHeatmap(f) {{
     MEDIAN(CASE WHEN inhours=0 THEN total_active_aht END) as ooh_aht
     FROM cases ${{w}}`);
   const d = stats[0] || {{}};
-
-  const ahtPenalty = d.ih_aht > 0 ? Math.round((d.ooh_aht/d.ih_aht - 1)*100) : 0;
-  document.getElementById('hours-guide-stmt').innerHTML =
-    `Out-of-hours cases don't just transfer more often, <strong>they transfer harder.</strong>
-     The OOH multi-transfer rate is <strong>${{Math.round(d.ooh_multi||0)}}% vs ${{Math.round(d.ih_multi||0)}}% in-hours</strong>
-     — and each of those transfers costs <strong>${{ahtPenalty > 0 ? '+' : ''}}${{ahtPenalty}}% more handle time</strong> than in-hours cases.
-     The heatmap below reveals exactly when the routing breaks down across the week.`;
 
   document.getElementById('hours-kpis').innerHTML = [
     kpiCard('In-Hours Multi-Transfer %', Math.round(d.ih_multi||0)+'%', 'kpi-success'),
