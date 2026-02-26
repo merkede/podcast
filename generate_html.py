@@ -265,7 +265,10 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
 <!-- HEADER -->
 <div class="hd-header">
   <div class="hd-logo">H</div>
-  <div class="hd-title">Messenger Transfer Analytics &nbsp;|&nbsp; Hastings Direct</div>
+  <div>
+    <div class="hd-title">Messenger Transfer Analytics &nbsp;|&nbsp; Hastings Direct</div>
+    <div style="color:rgba(255,255,255,.5);font-size:.68rem;letter-spacing:.3px;margin-top:.1rem;">by Hamzah Javaid</div>
+  </div>
   <div style="margin-left:auto;color:#aaa;font-size:.75rem;" id="case-count-badge"></div>
 </div>
 
@@ -325,6 +328,21 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
 
   <!-- ── TAB 1: OVERVIEW ── -->
   <div id="tab-overview" class="tab-panel active">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:1.2rem;">
+      <div>
+        <h5 style="margin:0;font-weight:800;color:#201F1E;font-size:1.05rem;">Messenger Transfer Analytics</h5>
+        <div style="font-size:.78rem;color:#888;margin-top:.15rem;">Built by <strong style="color:#0078D4;">Hamzah Javaid</strong> &nbsp;·&nbsp; Hastings Direct</div>
+      </div>
+      <div id="fcs-callout" style="background:linear-gradient(135deg,#fff8e1,#fff3cd);border:1.5px solid #FFB900;
+        border-radius:8px;padding:.55rem 1rem;font-size:.78rem;color:#5a4000;display:flex;align-items:center;gap:.6rem;
+        box-shadow:0 1px 4px rgba(255,185,0,.2);white-space:nowrap;">
+        ⭐ Found this useful?
+        <a id="fcs-link" href="#" target="_blank" rel="noopener"
+          style="font-weight:700;color:#B8860B;text-decoration:none;border-bottom:1px solid #B8860B;">
+          Submit a 4Cs nomination
+        </a>
+      </div>
+    </div>
     <div class="guide-stmt">
       <strong>This report quantifies the cost of mis-routing in Messenger.</strong>
       Every transfer that could have been avoided represents wasted agent time, customer frustration,
@@ -2076,6 +2094,14 @@ initDB().catch(err => {{
   console.error(err);
 }});
 </script>
+
+<!-- FOOTER -->
+<div style="background:#1a1a2e;color:rgba(255,255,255,.45);font-size:.72rem;
+  text-align:center;padding:.6rem 1rem;letter-spacing:.3px;border-top:1px solid rgba(255,255,255,.08);">
+  Messenger Transfer Analytics &nbsp;·&nbsp; Built by <strong style="color:rgba(255,255,255,.7);">Hamzah Javaid</strong>
+  &nbsp;·&nbsp; Hastings Direct &nbsp;·&nbsp; {max_date}
+</div>
+
 </body>
 </html>"""
 
