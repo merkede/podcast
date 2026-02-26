@@ -205,6 +205,9 @@ body{{font-family:'Segoe UI',sans-serif;background:#F0F2F5;color:#201F1E;font-si
 /* ── Chart insight ── */
 .chart-insight{{background:#FFFBF0;border-left:4px solid var(--pbi-warning);border-radius:0 6px 6px 0;
   padding:.6rem 1rem;margin-top:.6rem;font-size:.78rem;color:#5a4a00;line-height:1.5;}}
+.chart-insight::before{{content:'What this shows';display:block;font-weight:700;
+  color:var(--pbi-blue);font-size:.72rem;letter-spacing:.4px;text-transform:uppercase;
+  margin-bottom:.3rem;}}
 /* ── Toggle buttons ── */
 .toggle-group{{display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.8rem;}}
 .toggle-btn{{border:1px solid var(--pbi-blue);border-radius:4px;padding:.3rem .8rem;
