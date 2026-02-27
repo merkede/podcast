@@ -465,6 +465,10 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:14px;heig
       </div>
     </div>
     <div class="row g-3" id="qi-kpis"></div>
+    <div class="chart-card mt-2">
+      <div id="chart-qi-flow-sankey"></div>
+      <div class="chart-insight">Band width shows case volume as a % of all inbound or outbound traffic for this queue. Band colour shows median case handle time — green bands are efficient flows, red bands are expensive ones where cases carry high accumulated handle time.</div>
+    </div>
     <div class="row g-3 mt-1">
       <div class="col-md-6"><div class="chart-card">
         <div id="chart-qi-inbound"></div>
@@ -1354,6 +1358,93 @@ function drawHeatmap() {{
 }}
 
 // ═══════════════════════════════════════════════════════
+// FLOW SANKEY — queue in middle, top-10 in/out on each side
+// ═══════════════════════════════════════════════════════
+function drawFlowSankey(divId, inbound, outbound, totalInbound, totalOutbound, selQ) {{
+  if (!inbound.length && !outbound.length) {{
+    Plotly.react(divId, [], {{title:'No flow data', height:400}}, {{responsive:true}});
+    return;
+  }}
+
+  // Build explicit node list — same queue can appear on both sides, so use side-keyed IDs
+  const nodes = [];
+  const nodeKey = {{}};
+  function addNode(name, side) {{
+    const k = name + '__' + side;
+    if (nodeKey[k] === undefined) {{ nodeKey[k] = nodes.length; nodes.push({{name, side}}); }}
+    return nodeKey[k];
+  }}
+  for (const r of inbound)  addNode(r.from_queue, 'in');
+  addNode(selQ, 'mid');
+  for (const r of outbound) addNode(r.to_queue, 'out');
+
+  const midIdx = nodeKey[selQ + '__mid'];
+
+  // Build links
+  const links = [];
+  for (const r of inbound) {{
+    links.push({{source:nodeKey[r.from_queue+'__in'], target:midIdx,
+      value:r.n, aht:r.med_aht||0,
+      pct:(r.n/totalInbound*100).toFixed(1), dir:'in'}});
+  }}
+  for (const r of outbound) {{
+    links.push({{source:midIdx, target:nodeKey[r.to_queue+'__out'],
+      value:r.n, aht:r.med_aht||0,
+      pct:(r.n/totalOutbound*100).toFixed(1), dir:'out'}});
+  }}
+
+  // AHT colour scale across all links: green (low AHT) → red (high AHT)
+  const ahts = links.map(l=>l.aht).filter(v=>v>0);
+  const minAht = ahts.length ? Math.min(...ahts) : 0;
+  const maxAht = ahts.length ? Math.max(...ahts) : 1;
+  function ahtRgba(aht) {{
+    const t = maxAht > minAht ? (aht - minAht) / (maxAht - minAht) : 0.5;
+    return `rgba(${{Math.round(220*t + 50*(1-t))}},${{Math.round(50*t + 180*(1-t))}},60,0.55)`;
+  }}
+
+  // Fixed 3-column layout: inbound x=0, selected x=0.5, outbound x=1
+  const inGroup  = nodes.filter(n=>n.side==='in');
+  const outGroup = nodes.filter(n=>n.side==='out');
+  const nodeX = [], nodeY = [];
+  for (const node of nodes) {{
+    if (node.side === 'in') {{
+      const i = inGroup.indexOf(node);
+      nodeX.push(0.01);
+      nodeY.push(Math.min(0.99, Math.max(0.01, (i+1)/(inGroup.length+1))));
+    }} else if (node.side === 'mid') {{
+      nodeX.push(0.5); nodeY.push(0.5);
+    }} else {{
+      const i = outGroup.indexOf(node);
+      nodeX.push(0.99);
+      nodeY.push(Math.min(0.99, Math.max(0.01, (i+1)/(outGroup.length+1))));
+    }}
+  }}
+
+  Plotly.react(divId, [{{
+    type:'sankey', arrangement:'fixed',
+    node:{{
+      pad:10, thickness:20,
+      label:nodes.map(n=>n.name),
+      x:nodeX, y:nodeY,
+      color:nodes.map(n => n.side==='mid' ? '#0078D4' : n.side==='in' ? '#00B294' : '#8764B8'),
+    }},
+    link:{{
+      source:links.map(l=>l.source),
+      target:links.map(l=>l.target),
+      value:links.map(l=>l.value),
+      label:links.map(l => l.pct+'% of '+(l.dir==='in'?'inbound':'outbound')+' | Med AHT: '+l.aht.toFixed(1)+' min'),
+      color:links.map(l=>ahtRgba(l.aht)),
+    }},
+  }}], {{
+    title:`Flow through ${{selQ}} — band colour = median case AHT (green = low, red = high)`,
+    height:450,
+    margin:{{l:20,r:20,t:55,b:20}},
+    font:{{size:10,family:'Segoe UI'}},
+    paper_bgcolor:'transparent',
+  }}, {{responsive:true}});
+}}
+
+// ═══════════════════════════════════════════════════════
 // TAB 5: QUEUE INTELLIGENCE
 // ═══════════════════════════════════════════════════════
 window.renderQueueIntel = async function() {{
@@ -1392,23 +1483,27 @@ window.renderQueueIntel = async function() {{
 
   // Fetch inbound, inbound true total, outbound, outbound true total in one round-trip
   const [inbound, inboundTotalRows, outbound, outboundTotalRows] = await Promise.all([
-    q(`SELECT prev.QUEUE_NEW as from_queue, COUNT(*) as n
+    q(`SELECT prev.QUEUE_NEW as from_queue, COUNT(*) as n,
+              MEDIAN(ca.total_active_aht) as med_aht
        FROM transitions t
        JOIN transitions prev ON t.CASE_ID=prev.CASE_ID AND t.QUEUE_ORDER=prev.QUEUE_ORDER+1
+       JOIN cases ca ON t.CASE_ID = ca.CASE_ID
        WHERE t.QUEUE_NEW='${{qSafe}}'
          AND t.CASE_ID IN (SELECT CASE_ID FROM cases c ${{w}})
-       GROUP BY prev.QUEUE_NEW ORDER BY n DESC LIMIT 12`),
+       GROUP BY prev.QUEUE_NEW ORDER BY n DESC LIMIT 10`),
     q(`SELECT COUNT(*) as total
        FROM transitions t
        JOIN transitions prev ON t.CASE_ID=prev.CASE_ID AND t.QUEUE_ORDER=prev.QUEUE_ORDER+1
        WHERE t.QUEUE_NEW='${{qSafe}}'
          AND t.CASE_ID IN (SELECT CASE_ID FROM cases c ${{w}})`),
-    q(`SELECT nxt.QUEUE_NEW as to_queue, COUNT(*) as n
+    q(`SELECT nxt.QUEUE_NEW as to_queue, COUNT(*) as n,
+              MEDIAN(ca.total_active_aht) as med_aht
        FROM transitions t
        JOIN transitions nxt ON t.CASE_ID=nxt.CASE_ID AND nxt.QUEUE_ORDER=t.QUEUE_ORDER+1
+       JOIN cases ca ON t.CASE_ID = ca.CASE_ID
        WHERE t.QUEUE_NEW='${{qSafe}}'
          AND t.CASE_ID IN (SELECT CASE_ID FROM cases c ${{w}})
-       GROUP BY nxt.QUEUE_NEW ORDER BY n DESC LIMIT 12`),
+       GROUP BY nxt.QUEUE_NEW ORDER BY n DESC LIMIT 10`),
     q(`SELECT COUNT(*) as total
        FROM transitions t
        JOIN transitions nxt ON t.CASE_ID=nxt.CASE_ID AND nxt.QUEUE_ORDER=t.QUEUE_ORDER+1
@@ -1417,6 +1512,8 @@ window.renderQueueIntel = async function() {{
   ]);
   const totalInbound  = Number(inboundTotalRows[0]?.total)  || 1;
   const totalOutbound = Number(outboundTotalRows[0]?.total) || 1;
+
+  drawFlowSankey('chart-qi-flow-sankey', inbound, outbound, totalInbound, totalOutbound, selQ);
 
   Plotly.react('chart-qi-inbound', [{{
     type:'bar',
