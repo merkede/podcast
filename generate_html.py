@@ -1616,8 +1616,8 @@ window.renderJourney = async function() {{
   }}
 
   // Sankey charts
-  drawSankey('chart-sankey-fwd', fwdPaths, fwdCids, `Forward Journey from ${{selQ}}`);
-  drawSankey('chart-sankey-bwd', bwdPaths, bwdCids, `Backward Journey to ${{selQ}}`);
+  drawSankey('chart-sankey-fwd', fwdPaths, fwdCids, `Forward Journey from ${{selQ}}`, depth);
+  drawSankey('chart-sankey-bwd', bwdPaths, bwdCids, `Backward Journey to ${{selQ}}`, depth);
 
   // Top 10 paths table
   const pathCounts = Object.entries(pathToCids)
@@ -1671,7 +1671,7 @@ function median(arr) {{
   return s.length%2 ? s[m] : (s[m-1]+s[m])/2;
 }}
 
-function drawSankey(divId, paths, cids, title) {{
+function drawSankey(divId, paths, cids, title, depth) {{
   if (!paths.length) {{
     Plotly.react(divId,[],{{title,height:300}},{{responsive:true}});
     return;
@@ -1691,11 +1691,35 @@ function drawSankey(divId, paths, cids, title) {{
   const links = Object.values(linkMap);
   const allNodes = [...new Set(links.flatMap(l=>[l.s,l.t]))];
   const nodeIdx = Object.fromEntries(allNodes.map((n,i)=>[n,i]));
-
-  // Store link→case IDs by position index (not as customdata, which breaks Plotly.js Sankey)
   const linkCidsByIdx = links.map(l=>l.cids);
 
-  // Convert hex → rgba so link bands are clearly visible against the white background
+  // Extract step number from "(Step N)" suffix
+  function getStep(label) {{
+    const m = label.match(/\(Step (\d+)\)$/);
+    return m ? parseInt(m[1]) : 1;
+  }}
+
+  // Group nodes by step so we can distribute y evenly within each pillar
+  const stepGroups = {{}};
+  for (const node of allNodes) {{
+    const step = getStep(node);
+    if (!stepGroups[step]) stepGroups[step] = [];
+    stepGroups[step].push(node);
+  }}
+
+  // Pin each node to its pillar column (x) and spread evenly within column (y)
+  const cols = Math.max(depth, 2);
+  const nodeX = [], nodeY = [];
+  for (const node of allNodes) {{
+    const step  = getStep(node);
+    const group = stepGroups[step];
+    const pos   = group.indexOf(node);
+    const x = (step - 1) / (cols - 1);
+    const y = (pos + 1) / (group.length + 1);
+    nodeX.push(Math.min(0.99, Math.max(0.01, x)));
+    nodeY.push(Math.min(0.99, Math.max(0.01, y)));
+  }}
+
   function hexRgba(hex, a) {{
     const r=parseInt(hex.slice(1,3),16), g=parseInt(hex.slice(3,5),16), b=parseInt(hex.slice(5,7),16);
     return `rgba(${{r}},${{g}},${{b}},${{a}})`;
@@ -1703,9 +1727,12 @@ function drawSankey(divId, paths, cids, title) {{
 
   const trace = {{
     type:'sankey',
-    arrangement:'snap',
-    node:{{pad:15,thickness:20,label:allNodes,
-      color:allNodes.map((_,i)=>CHART_COLORS[i%CHART_COLORS.length])}},
+    arrangement:'fixed',
+    node:{{
+      pad:15, thickness:20, label:allNodes,
+      x:nodeX, y:nodeY,
+      color:allNodes.map((_,i)=>CHART_COLORS[i%CHART_COLORS.length]),
+    }},
     link:{{
       source:links.map(l=>nodeIdx[l.s]),
       target:links.map(l=>nodeIdx[l.t]),
